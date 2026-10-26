@@ -29,3 +29,8 @@ motif round_trip {
   emit when score >= 0.6
 }
 ```
+
+## Licence
+
+[MIT](LICENSE). AMLworld data is not included; download it from its source
+under its own terms.

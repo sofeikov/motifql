@@ -317,9 +317,7 @@ motifql/
 ```
 
 ## 12. Open questions
-1. **Repo licence:** the repo must be public. Apache-2.0 would match ezrules.
-2. **Commit identity:** the git identity for the public repo.
-3. **UI stack:** a small FastAPI plus a single page with a graph library, or
+1. **UI stack:** a small FastAPI plus a single page with a graph library, or
    Streamlit for speed.
-4. **ezrules in the video:** whether to show the ezrules proxy integration,
+2. **ezrules in the video:** whether to show the ezrules proxy integration,
    or keep it as a README section so the video stays on what's new.
