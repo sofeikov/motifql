@@ -1,0 +1,174 @@
+// MotifQL v0 grammar (Lark, Earley parser).
+//
+// A file holds term definitions, quantifier definitions and motifs.
+// Semantics, static checks and scoring rules live in docs/LANGUAGE.md;
+// this file only fixes the surface syntax.
+
+start: _item*
+
+_item: term_def
+     | quantifier_def
+     | motif
+
+// ---------------------------------------------------------------------------
+// Definitions
+// ---------------------------------------------------------------------------
+
+// term soon = trapezoid(0h, 0h, 6h, 48h)
+// term just_below(limit) = trapezoid(0.85 * limit, 0.95 * limit, 0.999 * limit, limit)
+term_def: "term" NAME params? "=" call
+
+// quantifier mostly = ramp(0.6, 0.9)
+quantifier_def: "quantifier" NAME "=" call
+
+params: "(" NAME ("," NAME)* ")"
+
+// ---------------------------------------------------------------------------
+// Motifs
+// ---------------------------------------------------------------------------
+
+motif: "motif" NAME "{" match_clause _clause* "}"
+
+_clause: group_clause
+       | where_clause
+       | having_clause
+       | soft_clause
+       | score_clause
+       | emit_clause
+
+match_clause: "match" pattern ("," pattern)*
+
+// group by s, d over m window 6h
+// group by c over x, y window 1d
+group_clause: "group" "by" NAME ("," NAME)* "over" NAME ("," NAME)* window?
+window: "window" DURATION
+
+where_clause: "where" expr
+having_clause: "having" expr
+soft_clause: "soft" expr
+score_clause: "score" TNORM
+emit_clause: "emit" "when" "score" ">=" NUMBER
+
+TNORM: "min" | "product"
+
+// ---------------------------------------------------------------------------
+// Graph patterns
+// ---------------------------------------------------------------------------
+
+// (a) -[e:transfer*2..5]-> (a)
+pattern: node (edge node)*
+
+node: "(" NAME label? ")"
+
+edge: "-[" edge_spec "]->"   -> out_edge
+    | "<-[" edge_spec "]-"   -> in_edge
+
+edge_spec: NAME label? hops?
+label: ":" NAME
+
+// Every variable-length edge must state an upper bound.
+hops: "*" INT ".." INT
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+// One expression grammar is shared by where, having and soft. Which
+// constructs are legal in which clause is a static check, not a syntax rule.
+
+?expr: or_expr
+
+?or_expr: and_expr
+        | or_expr "or" and_expr            -> or_
+?and_expr: not_expr
+         | and_expr "and" not_expr         -> and_
+
+?not_expr: "not" not_expr                  -> not_
+         | quantified
+         | predicate
+
+// A quantifier body is one predicate or a parenthesised expression:
+//   each e: e.gap is soon
+//   most m: (leg2.amount ~= leg1.amount within 15% and leg2.gap is soon)
+quantified: quantifier NAME ":" not_expr
+
+quantifier: "each"                         -> q_each
+          | "all"                          -> q_all
+          | "some"                         -> q_some
+          | "most"                         -> q_most
+          | "few"                          -> q_few
+          | "at" "least" INT               -> q_at_least
+          | "@" NAME                       -> q_named
+
+?predicate: comparison
+          | approx
+          | membership
+          | "(" expr ")"
+          | "true"                         -> true_
+          | "false"                        -> false_
+
+comparison: arith COMPARE arith
+COMPARE: "<=" | ">=" | "==" | "!=" | "<" | ">"
+
+// x ~= y within 10%      relative tolerance
+// x ~= y within 500 USD  absolute tolerance
+approx: arith "~=" arith "within" tolerance
+?tolerance: PERCENT
+          | money
+          | DURATION
+          | NUMBER
+
+// e.gap is soon / e is time_ordered / e.amount is just_below(10000 USD)
+membership: arith "is" NEGATE? NAME call_args?
+NEGATE: "not"
+
+// ---------------------------------------------------------------------------
+// Arithmetic and references
+// ---------------------------------------------------------------------------
+
+?arith: product
+      | arith ADD_OP product               -> binop
+?product: unary
+        | product MUL_OP unary             -> binop
+?unary: "-" unary                          -> neg
+      | atom
+
+?atom: DURATION
+     | PERCENT
+     | money
+     | NUMBER
+     | call
+     | ref
+     | "(" arith ")"
+
+ADD_OP: "+" | "-"
+MUL_OP: "*" | "/"
+
+money: NUMBER CURRENCY
+
+// e.amount, prev.time, s.bank
+ref: NAME ("." NAME)*
+
+// count(distinct m), span(e), span(all), sum(leg2.amount)
+call: NAME call_args
+call_args: "(" [arg ("," arg)*] ")"
+?arg: "distinct" ref                       -> distinct
+    | "all"                                -> all_bindings
+    | arith
+
+// ---------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------
+
+DURATION.3: /\d+(\.\d+)?(ms|s|m|h|d|w)(?![A-Za-z0-9_])/
+PERCENT.3: /\d+(\.\d+)?%/
+CURRENCY.2: /[A-Z]{3}(?![A-Za-z0-9_])/
+NUMBER: /\d+(\.\d+)?/
+INT: /\d+/
+// Reserved words are excluded from NAME so they never parse as references.
+NAME: /(?!(all|and|at|distinct|each|false|few|is|least|most|not|or|some|true|within)(?![A-Za-z0-9_]))[a-z_][A-Za-z0-9_]*/
+
+COMMENT: /\/\/[^\n]*/
+
+%import common.WS
+%ignore WS
+%ignore COMMENT

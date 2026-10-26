@@ -1,0 +1,152 @@
+// Reference motifs for the eight AMLworld laundering patterns
+// (Altman et al., NeurIPS 2023, section 3.2), written in MotifQL v0.
+//
+// These are starting hypotheses, not tuned detectors. Windows follow the
+// Graph Feature Preprocessor defaults (6h for scatter-gather, 1d for the rest)
+// and are widened where a pattern is known to span longer. The paper does not
+// say laundering amounts are conserved hop to hop, so every amount-conservation
+// condition below is a hypothesis to check against HI-Small.
+
+// ---------------------------------------------------------------------------
+// Shared vocabulary
+// ---------------------------------------------------------------------------
+
+term quickly = trapezoid(0h, 0h, 1h, 12h)   // fully true up to 1h, false by 12h
+term soon = trapezoid(0h, 0h, 6h, 48h)      // fully true up to 6h, false by 48h
+term several = ramp(2, 5)                   // 0 at 2 or fewer, 1 at 5 or more
+term many = ramp(3, 8)
+term just_below(limit) = trapezoid(0.85 * limit, 0.95 * limit, 0.999 * limit, limit)
+
+quantifier mostly = ramp(0.6, 0.9)          // share of members that must hold
+
+// ---------------------------------------------------------------------------
+// 1. Cycle: money leaves an account and comes back to it.
+// ---------------------------------------------------------------------------
+
+motif round_trip {
+  match (a:account) -[e:transfer*2..5]-> (a)
+  where e is time_ordered
+    and span(e) <= 7d
+  soft  each e: e.gap is soon
+    and each e: e.amount ~= prev.amount within 20%
+  score min
+  emit when score >= 0.6
+}
+
+// ---------------------------------------------------------------------------
+// 2. Random: like a cycle, but the money does not return. On its own this is
+//    weakly separable from normal payment chains; expect low precision.
+// ---------------------------------------------------------------------------
+
+motif layering_chain {
+  match (a:account) -[e:transfer*3..6]-> (z:account)
+  where e is time_ordered
+    and span(e) <= 2d
+    and a != z
+  soft  each e: e.gap is quickly
+    and each e: e.amount ~= prev.amount within 10%
+  score min
+  emit when score >= 0.7
+}
+
+// ---------------------------------------------------------------------------
+// 3. Fan-out: one account pays many distinct accounts.
+// ---------------------------------------------------------------------------
+
+motif fan_out {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft  count(distinct r) is many
+    and @mostly r: e.amount ~= avg(e.amount) within 25%
+  score product
+  emit when score >= 0.5
+}
+
+// ---------------------------------------------------------------------------
+// 4. Fan-in: many distinct accounts pay one account.
+// ---------------------------------------------------------------------------
+
+motif fan_in {
+  match (x:account) -[e:transfer]-> (t:account)
+  group by t over x window 1d
+  having count(distinct x) >= 2
+  soft  count(distinct x) is many
+    and @mostly x: e.amount ~= avg(e.amount) within 25%
+  score product
+  emit when score >= 0.5
+}
+
+// ---------------------------------------------------------------------------
+// 5. Scatter-gather: one source spreads money through intermediaries that
+//    forward it to one destination.
+// ---------------------------------------------------------------------------
+
+motif scatter_gather {
+  match (s:account) -[leg1:transfer]-> (m:account) -[leg2:transfer]-> (d:account)
+  group by s, d over m window 6h
+  where leg2.time > leg1.time
+    and s != d
+  having count(distinct m) >= 2
+  soft  count(distinct m) is several
+    and most m: leg2.amount ~= leg1.amount within 15%
+    and sum(leg2.amount) ~= sum(leg1.amount) within 20%
+  score product
+  emit when score >= 0.5
+}
+
+// ---------------------------------------------------------------------------
+// 6. Gather-scatter: one account collects from many and pays out to many.
+// ---------------------------------------------------------------------------
+
+motif gather_scatter {
+  match (x:account) -[g:transfer]-> (c:account),
+        (c) -[p:transfer]-> (y:account)
+  group by c over x, y window 1d
+  where p.time > g.time
+  having count(distinct x) >= 2
+     and count(distinct y) >= 2
+  soft  count(distinct x) is several
+    and count(distinct y) is several
+    and sum(p.amount) ~= sum(g.amount) within 20%
+  score product
+  emit when score >= 0.5
+}
+
+// ---------------------------------------------------------------------------
+// 7. Bipartite: a set of senders pays a set of receivers. v0 approximates the
+//    pattern with its smallest complete core, a 2x2 "butterfly".
+// ---------------------------------------------------------------------------
+
+motif bipartite_butterfly {
+  match (x1:account) -[e1:transfer]-> (y1:account),
+        (x1) -[e2:transfer]-> (y2:account),
+        (x2:account) -[e3:transfer]-> (y1),
+        (x2) -[e4:transfer]-> (y2)
+  where x1 != x2
+    and y1 != y2
+    and span(all) <= 1d
+  soft  span(all) is soon
+  score min
+  emit when score >= 0.6
+}
+
+// ---------------------------------------------------------------------------
+// 8. Stack: two bipartite layers in sequence. Not expressible cleanly in v0:
+//    it needs set-valued variables (a whole layer of accounts) rather than
+//    single bindings. Tracked as an open problem in docs/LANGUAGE.md.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Not an AMLworld pattern: structuring, to show threshold-shaped terms.
+// ---------------------------------------------------------------------------
+
+motif structuring_fan_in {
+  match (x:account) -[e:transfer]-> (t:account)
+  group by t over x window 1d
+  having count(distinct x) >= 3
+  soft  count(distinct x) is many
+    and most x: e.amount is just_below(10000 USD)
+  score min
+  emit when score >= 0.6
+}
