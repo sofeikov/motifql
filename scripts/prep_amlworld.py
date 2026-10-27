@@ -4,6 +4,16 @@
 Implements DESIGN.md section 6.1 (data preparation), using Polars instead of
 DuckDB — see docs/2026-10-27-data-prep.md for the rationale.
 
+Pipeline
+--------
+1. Load `<PREFIX>_Trans.csv`: rename the duplicated `Account` columns, keep
+   bank/account ids as strings (leading zeros matter), parse timestamps.
+2. Derive USD exchange rates from mixed-currency rows (median implied rate
+   per pair; per-day medians for drifting Bitcoin pairs) and convert.
+3. Sort by time and write `transfers.parquet`.
+4. Parse `<PREFIX>_Patterns.txt` into instance and membership tables, joining
+   each pattern line to its transfer row on all original fields.
+
 Inputs (downloaded, never committed):
     <input>/<PREFIX>_Trans.csv        raw transfers, e.g. HI-Small_Trans.csv
     <input>/<PREFIX>_Patterns.txt     laundering pattern instances
@@ -21,13 +31,17 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import io
+import logging
 import re
 from collections import deque
 from pathlib import Path
+from typing import Annotated
 
 import polars as pl
+import typer
+
+log = logging.getLogger("prep")
 
 PREFIX = {"hi-small": "HI-Small", "li-small": "LI-Small",
           "hi-medium": "HI-Medium", "li-medium": "LI-Medium"}
@@ -38,6 +52,15 @@ COLS = ["timestamp", "from_bank", "from_account", "to_bank", "to_account",
         "payment_currency", "payment_format", "is_laundering"]
 
 STRING_COLS = ["from_bank", "from_account", "to_bank", "to_account"]
+
+# A currency pair needs this many mixed-currency rows before its consistency
+# check (p95/p5 spread) is trusted; sparser pairs pass through unchecked.
+FX_MIN_PAIR_ROWS = 50
+# A pair whose 95th/5th percentile implied-rate ratio exceeds this is
+# "drifting" and gets per-day medians instead of one global median.
+FX_MAX_P95_P5 = 1.2
+# An FX edge needs this many rows to join the USD conversion graph below.
+FX_MIN_CHAIN_ROWS = 10
 
 # Pattern header lines come in two shapes, with and without a ": ..." suffix:
 #   BEGIN LAUNDERING ATTEMPT - FAN-OUT:  Max 16-degree Fan-Out
@@ -58,12 +81,18 @@ TS_FMT = "%Y/%m/%d %H:%M"
 
 
 def load_transfers(path: Path) -> pl.DataFrame:
+    """Raw CSV into a typed frame with stable row ids and a day column."""
     df = (pl.read_csv(path, has_header=True, new_columns=COLS,
                       schema_overrides={c: pl.String for c in STRING_COLS})
             .with_row_index("transfer_id")
-            .with_columns(pl.col("timestamp").alias("ts_raw"))
-            .with_columns(pl.col("timestamp").str.strptime(pl.Datetime, TS_FMT))
-            .with_columns(pl.col("timestamp").dt.date().alias("day")))
+            .with_columns(
+                pl.col("timestamp").alias("ts_raw"),
+                pl.col("timestamp").str.strptime(pl.Datetime, TS_FMT),
+                # Day straight from the fixed-format string: one projection
+                # over the raw columns instead of a second pass over the
+                # parsed timestamp.
+                pl.col("timestamp").str.slice(0, 10).str.to_date("%Y/%m/%d").alias("day"),
+            ))
     assert all(df.schema[c] == pl.String for c in STRING_COLS), "bank/account id type drift"
     return df
 
@@ -85,9 +114,14 @@ def derive_fx(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     return rates, btc_daily
 
 
-def usd_rate_per_currency(rates: pl.DataFrame, min_n: int = 10) -> dict[str, float]:
-    """Rate of 1 unit of each currency in USD, from direct pairs where they
-    exist, else via the shortest chain of well-supported pairs (BFS)."""
+def usd_rate_per_currency(rates: pl.DataFrame,
+                          min_n: int = FX_MIN_CHAIN_ROWS) -> dict[str, float]:
+    """USD value of 1 unit of each currency.
+
+    From direct pairs where they exist, else via the shortest chain of
+    well-supported pairs (BFS over pair medians). Only pairs with at least
+    `min_n` rows become graph edges, so one-off rows can't skew a chain.
+    """
     edges: dict[str, list[tuple[str, float]]] = {}
     for pay, recv, n, med in rates.select(
             ["payment_currency", "receiving_currency", "n", "median"]).iter_rows():
@@ -106,13 +140,19 @@ def usd_rate_per_currency(rates: pl.DataFrame, min_n: int = 10) -> dict[str, flo
 
 
 def add_usd(df: pl.DataFrame, rates: pl.DataFrame, btc_daily: pl.DataFrame) -> pl.DataFrame:
+    """Convert `amount_paid` to USD, one rate per payment currency.
+
+    Rows touching Bitcoin use that day's median rate for their pair instead
+    of the global median, since the BTC rate drifts (see `derive_fx`):
+    X→USD rows take the daily median directly, USD→X rows are already USD,
+    and (rare) X→BTC rows keep the chained global rate.
+    """
     to_usd = usd_rate_per_currency(rates)
     missing = set(df["payment_currency"].unique()) - set(to_usd)
     if missing:
-        print(f"  WARNING: no USD path for {sorted(missing)}; amount_usd left null")
+        log.warning("no USD path for %s; amount_usd left null", sorted(missing))
     df = df.with_columns(
         pl.col("payment_currency").replace_strict(to_usd, default=None).alias("usd_rate"))
-    # Override with the daily median for rows touching Bitcoin.
     if len(btc_daily):
         df = df.join(btc_daily, on=["payment_currency", "receiving_currency", "day"], how="left")
         df = df.with_columns(
@@ -127,8 +167,17 @@ def add_usd(df: pl.DataFrame, rates: pl.DataFrame, btc_daily: pl.DataFrame) -> p
 
 
 def parse_patterns(path: Path, csv_header: str) -> tuple[pl.DataFrame, list[tuple[int, str, int]]]:
-    """Returns (member-row frame aligned to COLS with instance_id, instance meta list)."""
-    instances: list[tuple[int, str, int]] = []  # (id, type, n_txn_lines)
+    """Pattern instances from a `*_Patterns.txt` file.
+
+    Instance ids are assigned sequentially (the file headers carry only the
+    pattern type). Transaction lines are parsed with the same CSV options as
+    the main file, so values compare exactly at join time. `END LAUNDERING
+    ATTEMPT - ...` footers carry no data and are skipped.
+
+    Returns the member-row frame (aligned to COLS, with `instance_id`) and
+    the (id, type, transaction-line count) instance list.
+    """
+    instances: list[tuple[int, str, int]] = []
     txn_lines: list[str] = []
     line_instance: list[int] = []
     cur_type: str | None = None
@@ -151,7 +200,6 @@ def parse_patterns(path: Path, csv_header: str) -> tuple[pl.DataFrame, list[tupl
                 if cur_type not in TYPE_TO_MOTIF:
                     raise ValueError(f"unknown pattern type: {cur_type}")
             elif line.strip() and not line.startswith("END"):
-                # Transaction line. "END LAUNDERING ATTEMPT - ..." footers are skipped.
                 txn_lines.append(line)
                 line_instance.append(len(instances))
                 cur_count += 1
@@ -168,76 +216,90 @@ JOIN_KEYS = ["ts_raw", *COLS[1:]]  # all original CSV fields as parsed
 
 
 def _with_occ(df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+    """Number each row's occurrence within its duplicate-key group (1-based).
+
+    Lets the join below match duplicate rows one-to-one in order instead of
+    exploding them combinatorially.
+    """
     return df.with_columns(pl.int_range(pl.len()).cum_count().over(keys).alias("_occ"))
 
 
 def join_members(transfers: pl.DataFrame, members: pl.DataFrame) -> pl.DataFrame:
-    """Match each pattern transaction line to one transfer row on all original
-    fields. Duplicate rows are disambiguated by occurrence order."""
+    """Match each pattern transaction line to one transfer row.
+
+    Join key is all original CSV fields plus the within-duplicate occurrence
+    number, so identical rows pair up in order rather than cross-joining.
+    """
     left = _with_occ(members.rename({"timestamp": "ts_raw"}), JOIN_KEYS)
     right = _with_occ(transfers.select([*JOIN_KEYS, "transfer_id"]), JOIN_KEYS)
     joined = left.join(right, on=[*JOIN_KEYS, "_occ"], how="left")
     n_miss = joined.filter(pl.col("transfer_id").is_null()).select(pl.len()).item()
-    print(f"  pattern lines: {len(members)}, matched: {len(members) - n_miss}, "
-          f"unmatched: {n_miss}")
+    log.info("  pattern lines: %d, matched: %d, unmatched: %d",
+             len(members), len(members) - n_miss, n_miss)
     if n_miss:
-        print("  sample unmatched pattern lines:")
-        print(joined.filter(pl.col("transfer_id").is_null()).head(5))
+        log.warning("sample unmatched pattern lines:\n%s",
+                    joined.filter(pl.col("transfer_id").is_null()).head(5))
     return joined
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Prepare one AMLworld dataset.")
-    ap.add_argument("--input", required=True, type=Path, help="download directory")
-    ap.add_argument("--dataset", default="hi-small", choices=sorted(PREFIX),
-                    help="dataset id (default: hi-small)")
-    ap.add_argument("--out", default=Path("data"), type=Path, help="output root")
-    args = ap.parse_args()
+def main(
+    input: Annotated[Path, typer.Option(help="Download directory.")],
+    dataset: Annotated[str, typer.Option(help="Dataset id.")] = "hi-small",
+    out: Annotated[Path, typer.Option(help="Output root (gitignored).")] = Path("data"),
+) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if dataset not in PREFIX:
+        raise typer.BadParameter(f"unknown dataset {dataset!r}; choose from {sorted(PREFIX)}")
 
-    prefix = PREFIX[args.dataset]
-    trans_path = args.input / f"{prefix}_Trans.csv"
-    patt_path = args.input / f"{prefix}_Patterns.txt"
-    outdir = args.out / args.dataset
+    prefix = PREFIX[dataset]
+    trans_path = input / f"{prefix}_Trans.csv"
+    patt_path = input / f"{prefix}_Patterns.txt"
+    outdir = out / dataset
     outdir.mkdir(parents=True, exist_ok=True)
     for p in (trans_path, patt_path):
         if not p.exists():
             raise SystemExit(f"missing input: {p}")
 
-    print(f"[1/5] loading {trans_path.name}")
+    log.info("[1/5] loading %s", trans_path.name)
     df = load_transfers(trans_path)
     n_flag = df.filter(pl.col("is_laundering") == 1).select(pl.len()).item()
-    print(f"  rows: {len(df)}, flagged laundering: {n_flag} "
-          f"(1 in {len(df) / max(n_flag, 1):.0f})")
+    log.info("  rows: %d, flagged laundering: %d (1 in %.0f)",
+             len(df), n_flag, len(df) / max(n_flag, 1))
 
-    print("[2/5] deriving USD rates")
+    log.info("[2/5] deriving USD rates")
     rates, btc_daily = derive_fx(df)
-    bad = rates.filter((pl.col("n") >= 50) & (pl.col("p95_p5") > 1.2))
-    print(f"  mixed-currency rows: {rates['n'].sum()}, pairs: {len(rates)}")
-    print(f"  inconsistent pairs (n>=50, p95/p5>1.2): {len(bad)}")
+    bad = rates.filter((pl.col("n") >= FX_MIN_PAIR_ROWS)
+                       & (pl.col("p95_p5") > FX_MAX_P95_P5))
+    log.info("  mixed-currency rows: %d, pairs: %d", rates["n"].sum(), len(rates))
+    log.info("  inconsistent pairs (n>=%d, p95/p5>%.1f): %d",
+             FX_MIN_PAIR_ROWS, FX_MAX_P95_P5, len(bad))
     for row in bad.iter_rows(named=True):
-        print(f"    {row['payment_currency']} -> {row['receiving_currency']}: "
-              f"n={row['n']}, p95/p5={row['p95_p5']:.3f} (daily medians used)")
+        log.info("    %s -> %s: n=%d, p95/p5=%.3f (daily medians used)",
+                 row["payment_currency"], row["receiving_currency"],
+                 row["n"], row["p95_p5"])
     df = add_usd(df, rates, btc_daily)
     n_null_usd = df.filter(pl.col("amount_usd").is_null()).select(pl.len()).item()
-    print(f"  rows with no USD conversion: {n_null_usd}")
+    log.info("  rows with no USD conversion: %d", n_null_usd)
 
-    print("[3/5] sorting and writing transfers.parquet")
+    log.info("[3/5] sorting and writing transfers.parquet")
     df = df.sort(["timestamp", "transfer_id"]).drop("ts_raw")
     df.write_parquet(outdir / "transfers.parquet")
     rates.write_parquet(outdir / "fx_rates.parquet")
 
-    print("[4/5] parsing pattern instances")
+    log.info("[4/5] parsing pattern instances")
     with open(trans_path) as f:
         csv_header = f.readline()
     members, instances = parse_patterns(patt_path, csv_header)
-    print(f"  instances: {len(instances)}")
+    log.info("  instances: %d", len(instances))
+    # Re-derive the raw timestamp text for the join: the parsed column was
+    # dropped after sorting, and the join must compare raw text to raw text.
     df_rawkeys = df.with_columns(
         pl.col("timestamp").dt.strftime(TS_FMT).alias("ts_raw"))
     joined = join_members(df_rawkeys, members)
     n_covered = (joined.filter(pl.col("transfer_id").is_not_null())
                  .select(pl.col("transfer_id").n_unique()).item())
-    print(f"  flagged rows covered by >=1 instance: {n_covered} of {n_flag} "
-          f"({n_flag - n_covered} flagged but unattributed)")
+    log.info("  flagged rows covered by >=1 instance: %d of %d (%d flagged but unattributed)",
+             n_covered, n_flag, n_flag - n_covered)
     if n_covered < n_flag:
         covered_ids = joined.filter(pl.col("transfer_id").is_not_null()
                                     ).select("transfer_id").unique()
@@ -246,8 +308,8 @@ def main() -> None:
         dup_like = uncovered.join(
             members.rename({"timestamp": "ts_raw"}).select(JOIN_KEYS).unique(),
             on=JOIN_KEYS, how="semi").select(pl.len()).item()
-        print(f"    of which exact duplicates of a pattern row: {dup_like}, "
-              f"absent from {patt_path.name}: {len(uncovered) - dup_like}")
+        log.info("    of which exact duplicates of a pattern row: %d, absent from %s: %d",
+                 dup_like, patt_path.name, len(uncovered) - dup_like)
 
     inst_df = (pl.DataFrame({"instance_id": [i for i, _, _ in instances],
                              "pattern_type": [t for _, t, _ in instances]})
@@ -263,15 +325,15 @@ def main() -> None:
     inst_df = inst_df.join(spans, on="instance_id", how="left")
     inst_df.write_parquet(outdir / "pattern_instances.parquet")
     txns.write_parquet(outdir / "pattern_members.parquet")
-    print("  instances per type:")
-    print(inst_df.group_by(["pattern_type", "motif"]).len().sort("pattern_type"))
+    log.info("  instances per type:\n%s",
+             inst_df.group_by(["pattern_type", "motif"]).len().sort("pattern_type"))
 
-    print("[5/5] rows and flagged laundering per day")
+    log.info("[5/5] rows and flagged laundering per day")
     with pl.Config(tbl_rows=-1):
-        print(df.group_by("day").agg(pl.len().alias("n"), pl.col("is_laundering").sum()
-              .alias("laundering")).sort("day"))
-    print(f"done -> {outdir}")
+        log.info("\n%s", df.group_by("day").agg(pl.len().alias("n"), pl.col("is_laundering").sum()
+                 .alias("laundering")).sort("day"))
+    log.info("done -> %s", outdir)
 
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
