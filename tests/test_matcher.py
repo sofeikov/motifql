@@ -108,6 +108,84 @@ def test_chain_rejects_start_equal_to_receiver() -> None:
     assert not match(g, 2, LAYERING_CHAIN).found
 
 
+def test_chain_cannot_pass_through_receiver() -> None:
+    # N0 -> N1 -> N2 -> N1 anchored at N2 -> N1: the only 3-hop walk passes
+    # through the anchor receiver mid-path, repeating it once the anchor
+    # closes the walk. Not a simple path, so no witness.
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "N0", "002", "N1"),
+                (10, "002", "N1", "003", "N2"),
+                (20, "003", "N2", "002", "N1"),
+            ]
+        )
+    )
+    assert not match(g, 2, LAYERING_CHAIN).found
+
+
+def _brute_force(graph: TemporalGraph, anchor_pos: int, motif) -> bool:
+    """Exhaustive simple-path enumeration without caps: oracle for match.
+
+    Same anchored backward search, but no fanout/expansion caps and no
+    early exit, over the anchor-relative window throughout.
+    """
+    anchor_t = int(graph.times[anchor_pos])
+    sender = int(graph.frm[anchor_pos])
+    receiver = int(graph.to[anchor_pos])
+    window_start = anchor_t - motif.window_s
+
+    def dfs(node: int, t_bound: int, depth: int, visited: set[int]) -> bool:
+        edges, _ = graph.incoming(node, t_bound, t_bound - window_start)
+        for edge in edges.tolist():
+            edge = int(edge)
+            prev = int(graph.frm[edge])
+            hops = depth + 2  # this edge plus the anchor
+            if hops > motif.max_hops:
+                continue
+            if motif.closed and prev == receiver:
+                if hops >= motif.min_hops:
+                    return True
+                continue
+            if prev in visited:
+                continue
+            if not motif.closed and hops >= motif.min_hops and prev != receiver:
+                return True
+            if hops >= motif.max_hops:
+                continue
+            if dfs(prev, int(graph.times[edge]), depth + 1, visited | {prev}):
+                return True
+        return False
+
+    return dfs(sender, anchor_t, 0, {sender, receiver})
+
+
+def test_match_agrees_with_brute_force_oracle() -> None:
+    rng = np.random.default_rng(42)
+    for trial in range(30):
+        accts = [f"N{i}" for i in range(6)]
+        rows = [
+            (
+                int(rng.integers(0, 200)),
+                "001", str(rng.choice(accts)),
+                "001", str(rng.choice(accts)),
+            )
+            for _ in range(14)
+        ]
+        g = TemporalGraph.from_transfers(_frame(rows))
+        motifs = [ROUND_TRIP, LAYERING_CHAIN]
+        if trial % 3 == 0:
+            # Shrink the windows so the span bound binds on some anchors.
+            motifs = [dataclasses.replace(m, window_s=60 * 60) for m in motifs]
+        for anchor in range(g.n_edges):
+            for motif in motifs:
+                res = match(g, anchor, motif)
+                if not res.truncated:
+                    assert res.found == _brute_force(g, anchor, motif), (
+                        trial, anchor, motif.name,
+                    )
+
+
 def test_chain_min_hops() -> None:
     g = TemporalGraph.from_transfers(
         _frame([(0, "001", "A", "002", "B"), (10, "002", "B", "003", "C")])

@@ -96,25 +96,64 @@ def _capped(edges: np.ndarray, times: np.ndarray, cap: int
 
 def match(graph: TemporalGraph, anchor_pos: int, motif: PathMotif) -> MatchResult:
     """Score one anchor transfer (by edge position) against one path motif."""
+    witnesses, truncated, expansions = _search(graph, anchor_pos, motif)
+    if witnesses:
+        return MatchResult(True, witnesses[0], truncated, expansions)
+    return MatchResult(False, (), truncated, expansions)
+
+
+def find_all(
+    graph: TemporalGraph, anchor_pos: int, motif: PathMotif, cap: int = 1_000
+) -> tuple[list[tuple[int, ...]], bool, int]:
+    """Enumerate witnesses for one anchor, oldest-first plus anchor each.
+
+    Stops after ``cap`` witnesses (flags truncated): witness counts explode
+    on hub anchors, and recall accounting only needs the best overlap.
+    Shares the exact search core with :func:`match`.
+    """
+    return _search(graph, anchor_pos, motif, collect_all=True, cap=cap)
+
+
+def _search(
+    graph: TemporalGraph,
+    anchor_pos: int,
+    motif: PathMotif,
+    collect_all: bool = False,
+    cap: int = 1,
+) -> tuple[list[tuple[int, ...]], bool, int]:
+    """Anchored backward DFS core behind :func:`match` and :func:`find_all`."""
     anchor_t = int(graph.times[anchor_pos])
     sender = int(graph.frm[anchor_pos])
     receiver = int(graph.to[anchor_pos])
     window_start = anchor_t - motif.window_s
     expansions = 0
     truncated = False
+    witnesses: list[tuple[int, ...]] = []
 
     first_edges, first_times = graph.incoming(sender, anchor_t, motif.window_s)
     if len(first_edges) == 0:
-        return MatchResult(False, (), False, 0)
+        return witnesses, False, 0
     first, hit = _capped(first_edges, first_times, motif.max_fanout)
     truncated = hit
 
-    # path holds the back-edges taken below the anchor (path[-1] is deepest);
-    # visited holds every node on the current walk, plus the anchor receiver
-    # for closed motifs so the walk cannot pass through it before closing.
+    # path holds the back-edges taken below the anchor (path[-1] is deepest).
+    # visited holds every node on the current walk, always including the
+    # anchor receiver: a walk through the receiver mid-path (X -> R -> S
+    # under anchor S -> R) repeats R once the anchor closes it, so it is
+    # not a simple path. The prev != receiver accept check below stays as
+    # a backstop for open motifs.
     stack: list[_Frame] = [_Frame(sender, first)]
     path: list[int] = []
-    visited: set[int] = {sender, receiver} if motif.closed else {sender}
+    visited: set[int] = {sender, receiver}
+
+    def _emit(witness: tuple[int, ...]) -> bool:
+        """Collect one witness; True when the search should stop."""
+        witnesses.append(witness)
+        if not collect_all or len(witnesses) >= cap:
+            return True
+        return False
+
+    capped = False
 
     while stack:
         frame = stack[-1]
@@ -148,17 +187,22 @@ def match(graph: TemporalGraph, anchor_pos: int, motif: PathMotif) -> MatchResul
             continue  # paths only age as they extend: safe to prune
         if motif.closed and prev == receiver:
             if hops >= motif.min_hops:
-                return MatchResult(True, tuple(reversed(path + [edge]))
-                                        + (anchor_pos,), truncated, expansions)
+                if _emit(tuple(reversed(path + [edge])) + (anchor_pos,)):
+                    capped = collect_all and len(witnesses) >= cap
+                    return witnesses, truncated or capped, expansions
             continue  # closes too early: below min_hops, keep looking
         if prev in visited:
             continue  # simple path (the closing step above is the exception)
         if not motif.closed and hops >= motif.min_hops and prev != receiver:
-            return MatchResult(True, tuple(reversed(path + [edge]))
-                                    + (anchor_pos,), truncated, expansions)
+            if _emit(tuple(reversed(path + [edge])) + (anchor_pos,)):
+                capped = collect_all and len(witnesses) >= cap
+                return witnesses, truncated or capped, expansions
         if hops >= motif.max_hops:
             continue
-        nxt_edges, nxt_times = graph.incoming(prev, edge_t, motif.window_s)
+        # Window relative to the anchor, not the edge: edges older than the
+        # anchor's window start can never complete, so they must not consume
+        # fanout budget or count as truncation when cut.
+        nxt_edges, nxt_times = graph.incoming(prev, edge_t, edge_t - window_start)
         if len(nxt_edges) == 0:
             continue
         nxt, hit = _capped(nxt_edges, nxt_times, motif.max_fanout)
@@ -167,4 +211,4 @@ def match(graph: TemporalGraph, anchor_pos: int, motif: PathMotif) -> MatchResul
         path.append(edge)
         stack.append(_Frame(prev, nxt))
 
-    return MatchResult(False, (), truncated, expansions)
+    return witnesses, truncated, expansions

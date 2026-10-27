@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 import typer
 
@@ -35,7 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import splits  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.matcher import LAYERING_CHAIN, ROUND_TRIP, PathMotif, match  # noqa: E402
+from motifql.matcher import (  # noqa: E402
+    LAYERING_CHAIN, ROUND_TRIP, PathMotif, find_all, match,
+)
 
 log = logging.getLogger("replay_bench")
 
@@ -51,7 +54,13 @@ MOTIFS: dict[str, PathMotif] = {
 _GRAPH: TemporalGraph | None = None
 
 
-def _score_shard(args: tuple[np.ndarray, PathMotif]) -> tuple[np.ndarray, int, int, int]:
+ShardResult = tuple[npt.NDArray[np.float64], int, int, int]
+"""Per-shard tally: latencies (us), fires, truncated anchors, expansions."""
+
+
+def _score_shard(
+    args: tuple[npt.NDArray[np.int64], PathMotif],
+) -> ShardResult:
     """Score one anchor shard; runs in a worker process."""
     positions, motif = args
     assert _GRAPH is not None
@@ -100,6 +109,7 @@ def main(
         assert int(sorted_tids[i]) == tid, f"transfer {tid} not in graph"
         return int(order[i])
 
+    fire_rates: dict[str, float] = {}
     for name, motif in MOTIFS.items():
         log.info("[2/4] replaying %s over %d anchors (%s)", name, len(anchor_pos),
                  "serial" if workers <= 1 else f"{workers} workers")
@@ -138,26 +148,46 @@ def main(
             f"({100 * trunc / len(anchor_pos):.3f}%), "
             f"mean expansions {expansions / len(anchor_pos):.1f}"
         )
+        fire_rates[name] = found / len(anchor_pos)
 
     log.info("[3/4] per-instance recall on train CYCLE/RANDOM (anchor = last member)")
     inst = splits.assign_instance_splits(
         pl.read_parquet(data / "pattern_instances.parquet"),
         pl.read_parquet(data / "pattern_members.parquet"), df)
     memb = pl.read_parquet(data / "pattern_members.parquet")
-    for ptype, motif in (("CYCLE", ROUND_TRIP), ("RANDOM", LAYERING_CHAIN)):
+    for ptype, motif, mname in (("CYCLE", ROUND_TRIP, "round_trip"),
+                                 ("RANDOM", LAYERING_CHAIN, "layering_chain")):
         sub = inst.filter((pl.col("pattern_type") == ptype) & (pl.col("split") == "train"))
         m = (memb.join(sub.select("instance_id"), on="instance_id")
-             .join(df.select("transfer_id", "timestamp"), on="transfer_id")
-             .sort(["instance_id", "timestamp"]))
-        last = m.group_by("instance_id").agg(
-            pl.col("transfer_id").last().alias("anchor_tid"),
-            pl.len().alias("n"))
+             .join(df.select("transfer_id", "timestamp"), on="transfer_id"))
+        per_inst = m.group_by("instance_id").agg(
+            pl.col("transfer_id").sort_by("timestamp").alias("tids"))
+        # Instances shorter than min_hops cannot complete the motif by
+        # construction; exclude and count them instead of scoring misses.
+        rows = [r for r in per_inst.iter_rows(named=True)
+                if len(r["tids"]) >= motif.min_hops]
+        excluded = per_inst.height - len(rows)
         caught = 0
-        for row in last.iter_rows(named=True):
-            res = match(graph, edge_pos(row["anchor_tid"]), motif)
-            caught += res.found
-        log.info("  %s: %d/%d train instances caught (anchor = last member)",
-                 ptype, caught, last.height)
+        best_sum = 0.0
+        first_sum = 0.0
+        for row in rows:
+            members = set(row["tids"])
+            anchor = edge_pos(row["tids"][-1])
+            witnesses, _, _ = find_all(graph, anchor, motif)
+            overlaps = [len({int(graph.transfer_id[e]) for e in w} & members)
+                          / len(members) for w in witnesses]
+            first = overlaps[0] if overlaps else 0.0
+            best = max(overlaps) if overlaps else 0.0
+            first_sum += first
+            best_sum += best
+            caught += best >= 2 / 3
+        chance = fire_rates[mname] * len(rows)
+        log.info("  %s: %d/%d caught (best witness overlap >= 2/3; "
+                 "%d excluded below min_hops %d), mean best overlap %.2f, "
+                 "mean first overlap %.2f, chance ~%.1f",
+                 ptype, caught, len(rows), excluded, motif.min_hops,
+                 best_sum / len(rows) if rows else 0.0,
+                 first_sum / len(rows) if rows else 0.0, chance)
     log.info("[4/4] done")
 
 

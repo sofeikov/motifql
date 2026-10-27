@@ -25,8 +25,8 @@ Retention
 ---------
 Queries are always window-bounded, so retention is a watermark plus lazy
 per-node floor offsets: ``evict_before(t)`` only moves the watermark
-(O(1)); each query rebases the touched node's floor past the watermark on
-first access, amortised O(1). Memory of evicted edges is not freed until a
+(O(1)); each query rebases the touched node's floor with one binary
+search (O(log degree)). Memory of evicted edges is not freed until a
 rebuild -- documented, not silent.
 
 Time semantics
@@ -49,6 +49,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 log = logging.getLogger("graph")
@@ -64,18 +65,18 @@ class TemporalGraph:
     def __init__(
         self,
         *,
-        times: np.ndarray,
-        frm: np.ndarray,
-        to: np.ndarray,
-        amount: np.ndarray,
-        transfer_id: np.ndarray,
+        times: npt.NDArray[np.int64],
+        frm: npt.NDArray[np.int32],
+        to: npt.NDArray[np.int32],
+        amount: npt.NDArray[np.float32],
+        transfer_id: npt.NDArray[np.uint32],
         nodes: list[str],
-        out_ptr: np.ndarray,
-        out_edges: np.ndarray,
-        out_times: np.ndarray,
-        in_ptr: np.ndarray,
-        in_edges: np.ndarray,
-        in_times: np.ndarray,
+        out_ptr: npt.NDArray[np.int64],
+        out_edges: npt.NDArray[np.uint32],
+        out_times: npt.NDArray[np.int64],
+        in_ptr: npt.NDArray[np.int64],
+        in_edges: npt.NDArray[np.uint32],
+        in_times: npt.NDArray[np.int64],
         retention_s: int,
     ) -> None:
         self.times = times
@@ -96,6 +97,7 @@ class TemporalGraph:
         # Lazy per-node eviction floors, rebased on first access past watermark.
         self._out_lo = np.zeros(len(nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
+        self._floors_clean = True
 
     # -- construction ----------------------------------------------------
 
@@ -131,10 +133,16 @@ class TemporalGraph:
         )
         nodes: list[str] = node_frame.get_column("key").to_list()
         n = len(nodes)
+        # maintain_order="left": Polars joins give no row-order guarantee by
+        # default, and the CSR build plus replay anchor positions both assume
+        # the transfers frame stays in timestamp order. The sorted check
+        # above stays as a backstop.
         keyed = (
-            keyed.join(node_frame, left_on="_fk", right_on="key", how="left")
+            keyed.join(node_frame, left_on="_fk", right_on="key", how="left",
+                       maintain_order="left")
             .rename({"node": "_fn"})
-            .join(node_frame, left_on="_tk", right_on="key", how="left")
+            .join(node_frame, left_on="_tk", right_on="key", how="left",
+                  maintain_order="left")
             .rename({"node": "_tn"})
             .drop("_fk", "_tk")
         )
@@ -182,7 +190,7 @@ class TemporalGraph:
 
     def incoming(
         self, node: int, before_t: int, window_s: int
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
         """Edge positions and times into ``node`` over ``[before_t-window_s, before_t)``.
 
         Returns views, oldest first. Unknown nodes yield empty slices.
@@ -198,7 +206,7 @@ class TemporalGraph:
 
     def outgoing(
         self, node: int, before_t: int, window_s: int
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
         """Edge positions and times out of ``node`` over ``[before_t-window_s, before_t)``."""
         if node < 0:
             return _EMPTY_U32, _EMPTY_I64
@@ -212,23 +220,38 @@ class TemporalGraph:
     # -- retention --------------------------------------------------------
 
     def evict_before(self, t: int) -> None:
-        """Move the retention watermark to ``t`` (O(1); floors rebase lazily)."""
+        """Move the retention watermark (O(1); floors rebase lazily)."""
         if t > self.watermark:
             self.watermark = t
+            self._floors_clean = False
 
     def _rebase(
         self, ptr: np.ndarray, times: np.ndarray, lo: np.ndarray, node: int
     ) -> int:
         """Advance one node's eviction floor past the watermark; return it."""
         base = int(ptr[node])
-        # Clamp every call: one searchsorted keeps the floor exact for O(1)
-        # amortised cost since the watermark only moves forward.
+        # One searchsorted per call: O(log degree). Floors only move forward,
+        # so the expired prefix is never re-reported, but it is re-searched.
         floor = base + int(
             np.searchsorted(times[base:ptr[node + 1]], self.watermark, side="left")
         )
         if floor > lo[node]:
             lo[node] = floor
         return int(lo[node])
+
+    def _rebase_all(self) -> None:
+        """Advance every node's floor past the watermark (estimation-time).
+
+        Adjacency queries rebase lazily, so untouched nodes lag behind; the
+        degree histogram must not report expired edges. Never called per
+        anchor — only ahead of degree statistics for the cost estimator.
+        """
+        if self._floors_clean:
+            return
+        for node in range(self.n_nodes):
+            self._rebase(self.in_ptr, self.in_times, self._in_lo, node)
+            self._rebase(self.out_ptr, self.out_times, self._out_lo, node)
+        self._floors_clean = True
 
     # -- degrees and cost statistics --------------------------------------
 
@@ -238,8 +261,9 @@ class TemporalGraph:
     def out_degree(self, node: int) -> int:
         return int(self.out_ptr[node + 1] - max(self.out_ptr[node], self._out_lo[node]))
 
-    def degree_histogram(self) -> np.ndarray:
+    def degree_histogram(self) -> npt.NDArray[np.int64]:
         """Live in+out degree histogram (feeds the Oct 29 cost estimator)."""
+        self._rebase_all()
         in_deg = np.diff(self.in_ptr) - (self._in_lo - self.in_ptr[:-1]).clip(min=0)
         out_deg = np.diff(self.out_ptr) - (self._out_lo - self.out_ptr[:-1]).clip(min=0)
         return np.bincount((in_deg + out_deg).astype(np.int64))
@@ -263,8 +287,8 @@ _EMPTY_I64 = np.empty(0, dtype=np.int64)
 
 
 def _csr(
-    endpoint: np.ndarray, times: np.ndarray, n_nodes: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    endpoint: npt.NDArray[np.int32], times: npt.NDArray[np.int64], n_nodes: int
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
     """CSR segments over ``endpoint``; stable argsort keeps time order."""
     order = np.argsort(endpoint, kind="stable").astype(np.uint32)
     counts = np.bincount(endpoint, minlength=n_nodes)
