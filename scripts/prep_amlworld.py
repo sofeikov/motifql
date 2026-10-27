@@ -9,7 +9,7 @@ Pipeline
 1. Load `<PREFIX>_Trans.csv`: rename the duplicated `Account` columns, keep
    bank/account ids as strings (leading zeros matter), parse timestamps.
 2. Derive USD exchange rates from mixed-currency rows (median implied rate
-   per pair; per-day medians for drifting Bitcoin pairs) and convert.
+   per pair) and convert.
 3. Sort by time and write `transfers.parquet`.
 4. Parse `<PREFIX>_Patterns.txt` into instance and membership tables, joining
    each pattern line to its transfer row on all original fields.
@@ -56,8 +56,9 @@ STRING_COLS = ["from_bank", "from_account", "to_bank", "to_account"]
 # A currency pair needs this many mixed-currency rows before its consistency
 # check (p95/p5 spread) is trusted; sparser pairs pass through unchecked.
 FX_MIN_PAIR_ROWS = 50
-# A pair whose 95th/5th percentile implied-rate ratio exceeds this is
-# "drifting" and gets per-day medians instead of one global median.
+# Pairs whose 95th/5th percentile implied-rate ratio exceeds this are logged
+# for the analyst (informational only: conversion always uses medians, which
+# are robust to the outliers that drive the spread).
 FX_MAX_P95_P5 = 1.2
 # An FX edge needs this many rows to join the USD conversion graph below.
 FX_MIN_CHAIN_ROWS = 10
@@ -97,21 +98,20 @@ def load_transfers(path: Path) -> pl.DataFrame:
     return df
 
 
-def derive_fx(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Median implied rate (received/paid) per currency pair, plus per-day
-    medians for pairs involving Bitcoin, whose rate drifts over time."""
+def derive_fx(df: pl.DataFrame) -> pl.DataFrame:
+    """Median implied rate (received/paid) per currency pair.
+
+    Medians are robust to the outlier rows that widen some pairs' spreads
+    (notably Bitcoin's); every pair, Bitcoin included, converts with one
+    global median — the daily medians are flat, so per-day rates would add
+    nothing. See the day report, section 3.
+    """
     mix = df.filter(pl.col("payment_currency") != pl.col("receiving_currency"))
-    rates = (mix.with_columns((pl.col("amount_received") / pl.col("amount_paid")).alias("rate"))
-                .group_by(["payment_currency", "receiving_currency"])
-                .agg(pl.len().alias("n"),
-                     pl.col("rate").median().alias("median"),
-                     (pl.col("rate").quantile(0.95) / pl.col("rate").quantile(0.05)).alias("p95_p5")))
-    btc_daily = (mix.filter(pl.col("payment_currency").str.contains("Bitcoin") |
-                            pl.col("receiving_currency").str.contains("Bitcoin"))
-                    .with_columns((pl.col("amount_received") / pl.col("amount_paid")).alias("rate"))
-                    .group_by(["payment_currency", "receiving_currency", "day"])
-                    .agg(pl.col("rate").median().alias("daily_median")))
-    return rates, btc_daily
+    return (mix.with_columns((pl.col("amount_received") / pl.col("amount_paid")).alias("rate"))
+               .group_by(["payment_currency", "receiving_currency"])
+               .agg(pl.len().alias("n"),
+                    pl.col("rate").median().alias("median"),
+                    (pl.col("rate").quantile(0.95) / pl.col("rate").quantile(0.05)).alias("p95_p5")))
 
 
 def usd_rate_per_currency(rates: pl.DataFrame,
@@ -139,31 +139,16 @@ def usd_rate_per_currency(rates: pl.DataFrame,
     return out
 
 
-def add_usd(df: pl.DataFrame, rates: pl.DataFrame, btc_daily: pl.DataFrame) -> pl.DataFrame:
-    """Convert `amount_paid` to USD, one rate per payment currency.
-
-    Rows touching Bitcoin use that day's median rate for their pair instead
-    of the global median, since the BTC rate drifts (see `derive_fx`):
-    X→USD rows take the daily median directly, USD→X rows are already USD,
-    and (rare) X→BTC rows keep the chained global rate.
-    """
+def add_usd(df: pl.DataFrame, rates: pl.DataFrame) -> pl.DataFrame:
+    """Convert `amount_paid` to USD, one rate per payment currency."""
     to_usd = usd_rate_per_currency(rates)
     missing = set(df["payment_currency"].unique()) - set(to_usd)
     if missing:
         log.warning("no USD path for %s; amount_usd left null", sorted(missing))
-    df = df.with_columns(
-        pl.col("payment_currency").replace_strict(to_usd, default=None).alias("usd_rate"))
-    if len(btc_daily):
-        df = df.join(btc_daily, on=["payment_currency", "receiving_currency", "day"], how="left")
-        df = df.with_columns(
-            pl.when(pl.col("daily_median").is_not_null() &
-                    (pl.col("receiving_currency") == "US Dollar"))
-            .then(pl.col("daily_median"))
-            .when(pl.col("daily_median").is_not_null() &
-                  (pl.col("payment_currency") == "US Dollar"))
-            .then(1.0)  # paid in USD already; nothing to convert
-            .otherwise(pl.col("usd_rate")).alias("usd_rate")).drop("daily_median")
-    return df.with_columns((pl.col("amount_paid") * pl.col("usd_rate")).alias("amount_usd"))
+    return df.with_columns(
+        pl.col("payment_currency").replace_strict(to_usd, default=None).alias("usd_rate"),
+        (pl.col("amount_paid")
+         * pl.col("payment_currency").replace_strict(to_usd, default=None)).alias("amount_usd"))
 
 
 def parse_patterns(path: Path, csv_header: str) -> tuple[pl.DataFrame, list[tuple[int, str, int]]]:
@@ -267,17 +252,17 @@ def main(
              len(df), n_flag, len(df) / max(n_flag, 1))
 
     log.info("[2/5] deriving USD rates")
-    rates, btc_daily = derive_fx(df)
+    rates = derive_fx(df)
     bad = rates.filter((pl.col("n") >= FX_MIN_PAIR_ROWS)
                        & (pl.col("p95_p5") > FX_MAX_P95_P5))
     log.info("  mixed-currency rows: %d, pairs: %d", rates["n"].sum(), len(rates))
-    log.info("  inconsistent pairs (n>=%d, p95/p5>%.1f): %d",
+    log.info("  wide-spread pairs (n>=%d, p95/p5>%.1f), medians still used: %d",
              FX_MIN_PAIR_ROWS, FX_MAX_P95_P5, len(bad))
     for row in bad.iter_rows(named=True):
-        log.info("    %s -> %s: n=%d, p95/p5=%.3f (daily medians used)",
+        log.info("    %s -> %s: n=%d, p95/p5=%.3f",
                  row["payment_currency"], row["receiving_currency"],
                  row["n"], row["p95_p5"])
-    df = add_usd(df, rates, btc_daily)
+    df = add_usd(df, rates)
     n_null_usd = df.filter(pl.col("amount_usd").is_null()).select(pl.len()).item()
     log.info("  rows with no USD conversion: %d", n_null_usd)
 
