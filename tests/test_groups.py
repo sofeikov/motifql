@@ -132,6 +132,29 @@ def test_fan_out_fires_with_many_members() -> None:
     assert len(res.witness) == 9
 
 
+def test_group_soft_arithmetic_evaluates() -> None:
+    # M2: arithmetic newly passes checks in group clauses, so the
+    # executors evaluate it instead of aborting (previously a loud
+    # E_UNIT, never silent).
+    doc = parse_text(
+        "motif t { match (a:account) -[e:transfer]-> (b:account)"
+        " group by a over b window 1d"
+        " having count(distinct b) >= 2"
+        " soft sum(e.amount) / count(distinct b) >= 50 USD"
+        " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    rich = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "002", "R1", 100.0),
+        (10, "001", "S", "002", "R2", 100.0),
+    ]))
+    assert score_group(rich, 1, plan, libs).found
+    poor = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "002", "R1", 10.0),
+        (10, "001", "S", "002", "R2", 10.0),
+    ]))
+    assert not score_group(poor, 1, plan, libs).found
+
+
 def test_fan_in_having_gate() -> None:
     # Only the anchor pays T: count(distinct x) == 1 < 2 -> miss.
     g = TemporalGraph.from_transfers(_frame([(0, "001", "X", "002", "T", 50.0)]))
@@ -194,6 +217,20 @@ def test_scatter_pairs_older_leg1_when_newest_is_stale() -> None:
     assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1, 2, 4]
 
 
+def test_gather_count_balance_gives_partial_credit_off_by_one() -> None:
+    # M6: `within 2` scores a diff-1 imbalance 0.5 — linear tolerance is
+    # 0 at exactly the width, so `within 1` zeroed the whole product.
+    g = TemporalGraph.from_transfers(_frame([
+        (10, "001", "X1", "002", "C", 100.0), (20, "001", "X2", "002", "C", 100.0),
+        (30, "001", "X3", "002", "C", 100.0),
+        (40, "002", "C", "003", "Y1", 100.0), (50, "002", "C", "003", "Y2", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 4, compile_motif(doc, "gather_scatter"), libs_from_doc(doc))
+    assert not res.found
+    assert res.top_score == pytest.approx(0.25)
+
+
 def test_gather_drops_payout_before_any_collection() -> None:
     # H7: `p.time > g.time` is enforced — a payout preceding every
     # collection cannot count as redistribution.
@@ -226,6 +263,33 @@ def test_butterfly_finds_core_and_ignores_decoy() -> None:
     # Anchor that cannot complete a core: the decoy edge.
     miss = score_butterfly(g, 1, plan, libs_from_doc(doc))
     assert not miss.found
+
+
+def _scatter_doc(having: str, soft: str | None) -> object:
+    text = (
+        "term several = ramp(1, 3)\n"
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        f" having {having}"
+    )
+    if soft is not None:
+        text += f" soft {soft}"
+    return parse_text(text + " score min emit when score >= 0.5 }")
+
+
+def test_scatter_single_member_group_fires() -> None:
+    # M5: `having count(distinct m) >= 1` accepts 1-member groups — the
+    # old `< 2` shortcut skipped them (and their expansion accounting).
+    g = TemporalGraph.from_transfers(_frame([
+        (10, "001", "S", "002", "M", 100.0),
+        (20, "002", "M", "003", "D", 100.0),
+    ]))
+    doc = _scatter_doc("count(distinct m) >= 1", None)
+    res = score_group(g, 1, compile_motif(doc, "t"), libs_from_doc(doc))
+    assert res.found and res.score == pytest.approx(1.0)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1]
 
 
 def _butterfly_doc(soft: str | None) -> object:
@@ -268,6 +332,26 @@ def test_butterfly_grades_named_span_term() -> None:
     res = score_butterfly(g, 3, compile_motif(doc, "bf"), libs_from_doc(doc))
     assert res.top_score == pytest.approx(0.5)
     assert not res.found  # below the 0.6 emit
+
+
+def test_butterfly_skips_truncated_partner_without_discarding_rest(monkeypatch) -> None:
+    # M4: cross entries are built in id order but scored in time order,
+    # so under truncation a missing key must `continue`, not `break` and
+    # discard later partners that do have entries. B (early, truncated
+    # out) precedes A (late, complete core) in scoring order.
+    monkeypatch.setattr("motifql.groups.DEFAULT_MAX_EXPANSIONS", 4)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "A", "002", "ZZ", 50.0),
+        (60, "001", "B", "002", "Q", 50.0),
+        (120, "001", "A", "002", "Q", 50.0),
+        (180, "001", "A", "002", "R", 50.0),
+        (240, "001", "P", "002", "R", 50.0),
+        (300, "001", "P", "002", "Q", 50.0),
+    ]))
+    doc = _butterfly_doc("span(all) is soon")
+    res = score_butterfly(g, 5, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.truncated
+    assert res.found and res.score == pytest.approx(1.0)
 
 
 def test_butterfly_without_soft_scores_one() -> None:

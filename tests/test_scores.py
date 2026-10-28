@@ -83,6 +83,31 @@ def test_perfect_witness_scores_one() -> None:
     ]
 
 
+def test_per_step_arithmetic_evaluates() -> None:
+    # M2: arithmetic over step fields evaluates per step in deferred
+    # predicates (previously a loud E_UNIT, never silent).
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.amount * 2 >= 150 USD"
+        + " score min emit when score >= 0.6 }"
+    )
+    plan = compile_motif(doc, "t")
+    assert plan.prunable == () and plan.deferred is not None
+    libs = libs_from_doc(doc)
+    hot = TemporalGraph.from_transfers(_frame([
+        (0, "001", "A", "002", "B", 100.0),
+        (10, "002", "B", "001", "A", 100.0),
+    ]))
+    assert score(hot, 1, plan, libs).found
+    cold = TemporalGraph.from_transfers(_frame([
+        (0, "001", "A", "002", "B", 50.0),
+        (10, "002", "B", "001", "A", 50.0),
+    ]))
+    assert not score(cold, 1, plan, libs).found
+
+
 def test_prune_agrees_with_unpruned_on_random_graphs() -> None:
     rng = np.random.default_rng(9)
     _, plan, libs = _round_trip()

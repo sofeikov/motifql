@@ -295,6 +295,55 @@ def test_group_legs_must_be_single_hop() -> None:
             + " having count(distinct x) >= 2 and count(distinct y) >= 2 }"), "t")
 
 
+def test_unquantified_step_comparison_rejected() -> None:
+    # M1: an unquantified step-field read has no step to read from — the
+    # evaluator aborts — so it is E_PLAN for comparisons and ~= alike,
+    # not just for `is <term>`.
+    for soft in ("e.amount >= 100 USD", "e.amount ~= e.amount within 10%"):
+        with pytest.raises(PlanError, match="E_PLAN"):
+            compile_motif(parse_text(HEADER
+                + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+                + " where e is time_ordered and span(e) <= 7d"
+                + f" soft {soft} }}"), "t")
+
+
+def test_single_hop_paths_rejected() -> None:
+    # M3: the walk only enumerates witnesses of 2+ hops, so `*1..n`
+    # must E_PLAN instead of silently under-firing.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*1..5]-> (a)"
+            + " where e is time_ordered and span(e) <= 7d }"), "t")
+
+
+def test_arithmetic_call_site_arg_accepted() -> None:
+    # M2: arithmetic is its own AST node — `0.5 * 10000 USD` is money
+    # (scaling), not a bool-vs-money comparison error, and the call-site
+    # value binds into the term breakpoints.
+    from motifql.degrees import libs_from_doc, resolve_term_args
+    text = (
+        "term just_below(limit) = trapezoid(0.85 * limit, 0.95 * limit, 0.999 * limit, limit)\n"
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where e is time_ordered and span(e) <= 7d"
+        " soft each e: e.amount is just_below(0.5 * 10000 USD) }")
+    assert _codes(text) == []
+    doc = parse_text(HEADER + text)
+    plan = compile_motif(doc, "t")
+    assert plan.deferred is not None
+    terms, _ = libs_from_doc(doc)
+    use_args = doc.motifs[0].soft.body.args
+    assert resolve_term_args("just_below", use_args, terms) == (4250.0, 4750.0, 4995.0, 5000.0)
+
+
+def test_mixed_unit_arithmetic_rejected() -> None:
+    # M2: money mixed with a duration in arithmetic is a genuine E_UNIT
+    # (caught where the old node-conflation could only misfire).
+    assert "E_UNIT" in _codes(
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d"
+        " soft each e: e.amount + e.gap is soon }")
+
+
 def test_cost_budget_rejects_huge_hops() -> None:
     dense = np.zeros(30)
     dense[20] = 100.0  # mean in-degree 10: *2..5 estimates ~1e5, passes

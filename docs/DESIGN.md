@@ -174,8 +174,11 @@ model.
 ### 6.5 Hubs and truncation
 Each anchor has an expansion cap, and each node has a per-step fan-out cap.
 Hitting a cap **does not raise an error**. The search stops, the result is
-marked `truncated: true` and the score is treated as a lower bound. The
-evaluation reports how often truncation happens and on which motifs.
+marked `truncated: true` and, for path motifs, the score is treated as a
+lower bound. Group-motif scores are not lower bounds under truncation:
+dropping members can raise non-monotone aggregates, so a truncated group
+result may overstate. The evaluation reports how often truncation happens
+and on which motifs.
 
 ### 6.6 Interfaces
 - **Python API:** `Engine(motifs).score(transfer) -> list[MotifResult]` and

@@ -115,7 +115,7 @@ motif gather_scatter {
      and count(distinct y) >= 2
   soft  count(distinct x) is several
     and count(distinct y) is several
-    and count(distinct x) ~= count(distinct y) within 1
+    and count(distinct x) ~= count(distinct y) within 2  // not 1: tolerance scores 0 at exactly the width
   // NOTE: was sum(p.amount) ~= sum(g.amount) within 20%. Sums are
   // outlier-fragile (one 38M transfer in inst 99) and background sums
   // swamp truth sums in hub groups (inst 99 measured 0.0). Count-balance

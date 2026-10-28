@@ -104,3 +104,7 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   `p.time > g.time` guard, butterfly named-term grading (soft-less = 1.0).
 - Regression tests per fix (75/75 pass); full bench, scored-replay and
   RQ1 reruns with dated correction sections in the Oct 28-30 reports.
+- Medium pass (same day, same issue): unquantified-comparison E_PLAN,
+  distinct arithmetic AST node with unit inference, `*1..n` rejection,
+  butterfly `continue`, scatter shortcut removal, gather `within 2`,
+  truncation-claim corrections (84/84 pass; RQ1 rerun, gather row only).
