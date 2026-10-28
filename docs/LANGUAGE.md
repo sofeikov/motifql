@@ -32,11 +32,13 @@ The engine sees a directed multigraph built from a stream of **transfers**.
 | | `amount` | money | normalised to USD (see design doc, data prep) |
 | | `amount_paid`, `currency` | money, string | original values |
 | | `payment_format` | string | ACH, Wire, Cheque, Credit Card, Cash, Reinvestment, Bitcoin |
-| | `gap` | duration | derived: time since the previous step on the same path; undefined on the first step |
+| | `gap` | duration | derived: time since the previous step on the same path; undefined on the first step. In scatter groups, `leg2.gap` is the member's forward delay (`leg2.time - leg1.time`); `leg1.gap` is undefined |
 | | `index` | int | derived: 1-based position on the path |
 
 The mapping from source columns to these fields is configuration, not part of
-the language.
+the language. Account fields (`bank`, `first_seen`, `in_degree`,
+`out_degree`) are declared but not carried by any executor yet — using one
+in `soft` is an `E_PLAN` error, not a silent skip.
 
 ## 2. Lexical structure
 
@@ -176,6 +178,9 @@ key variables `K…` into one candidate. The `over` variables are the
   - `span(all)`
 - **Quantifiers over a member variable** (`most m: …`) iterate that member's
   bindings. A member's edges are the edges that bind it.
+- **Same-timestamp edges are simultaneous.** When a member has several
+  edges at its latest timestamp, the body is scored over every tied
+  reading and the best wins — file order never picks between them.
 
 ### 4.5 `having`: hard group constraints
 

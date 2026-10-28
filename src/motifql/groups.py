@@ -37,6 +37,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 
@@ -57,6 +58,36 @@ DEFAULT_MAX_FANOUT = 1_000
 DEFAULT_MAX_EXPANSIONS = 50_000
 SCATTER_MAX_SENDERS = 100
 BUTTERFLY_MAX_PARTNERS = 50
+# Cap on same-timestamp readings tried per member (F1): real ties are a
+# handful; beyond this the keyed-hash order below is cut and truncated set.
+MAX_TIED_READINGS = 64
+
+_TIE_SEED = "motifql-member-tie-v1"
+
+
+def _hkey(edge_pos: int) -> int:
+    """Label-blind order key for simultaneous edges.
+
+    Graph position is file order, which correlates with the label
+    (laundering rows cluster), so it must never pick between edges at
+    the same timestamp. A keyed hash keeps the order deterministic
+    while carrying no label signal (same idea as rank_per_day's
+    tie-break in eval/evaluate.py).
+    """
+    return int(hashlib.md5(f"{_TIE_SEED}:{edge_pos}".encode()).hexdigest()[:16], 16)
+
+
+def _tied_latest(graph, edges: list[int]) -> tuple[list[int], bool]:
+    """Edges at the latest timestamp: same-minute rows are simultaneous
+    (the trailing-features precedent), so every tied edge is a candidate
+    reading. Keyed-hash order, capped; the flag reports a cap cut."""
+    if not edges:
+        return [], False
+    tmax = max(int(graph.times[e]) for e in edges)
+    tied = sorted((e for e in edges if int(graph.times[e]) == tmax), key=_hkey)
+    if len(tied) > MAX_TIED_READINGS:
+        return tied[:MAX_TIED_READINGS], True
+    return tied, False
 
 
 @dataclass
@@ -79,7 +110,8 @@ class _Ctx:
 
     `counts`: member var -> distinct members. `edge_amounts`/`edge_times`:
     edge var -> oldest-first values. `member_vals`: member var -> member key
-    -> {(edge var, field): value} representative readings (most recent edge).
+    -> list of {(edge var, field): value} readings, one per tied edge at
+    the latest timestamp (F1: simultaneous edges all count).
     `span`: max-min time over all group edges.
     """
 
@@ -87,7 +119,7 @@ class _Ctx:
         self.counts: dict[str, int] = {}
         self.edge_amounts: dict[str, list[float]] = {}
         self.edge_times: dict[str, list[float]] = {}
-        self.member_vals: dict[str, dict[int, dict[tuple[str, str], float]]] = {}
+        self.member_vals: dict[str, dict[int, list[dict[tuple[str, str], float]]]] = {}
         self.span: float = 0.0
 
 
@@ -252,11 +284,18 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str) -> tuple[float, l
     term_defs, quants = libs
     per_member = ctx.member_vals.get(node.var, {})
     hits: list[float] = []
-    for _, vals in per_member.items():
-        d = _eval_member(node.body, vals, ctx, libs, tnorm)
-        if d is None:
+    for _, readings in per_member.items():
+        # F1: the body is scored over every tied reading and the best
+        # wins — picking one by file order leaked the label. A member
+        # whose readings all skip is skipped, as before.
+        ds = []
+        for vals in readings:
+            d = _eval_member(node.body, vals, ctx, libs, tnorm)
+            if d is not None:
+                ds.append(d)
+        if not ds:
             continue
-        hits.append(d)
+        hits.append(max(ds))
     if not hits:
         vacuous = node.quant in ("each", "all") or node.quant.startswith("all_but:")
         deg = 1.0 if vacuous else 0.0
@@ -432,10 +471,17 @@ def _score_fan(graph, anchor_pos: int, plan, libs) -> GroupResult:
     all_edges = [int(e) for e in edges.tolist()] + [int(anchor_pos)]
     if expansions > DEFAULT_MAX_EXPANSIONS:
         truncated = True
-    # Most recent edge per member (anchor wins ties: it is the latest).
-    rep: dict[int, int] = {}
-    for e in sorted(all_edges, key=lambda p: (int(graph.times[p]), int(p))):
-        rep[int(side[e])] = int(e)
+    # Tied edges at the latest timestamp per member (F1): the anchor is
+    # the latest by time, so it is always among its member's readings.
+    by_member: dict[int, list[int]] = {}
+    for e in all_edges:
+        by_member.setdefault(int(side[e]), []).append(int(e))
+    rep: dict[int, list[int]] = {}
+    for node, es in by_member.items():
+        tied, cut = _tied_latest(graph, es)
+        if cut:
+            truncated = True
+        rep[node] = tied
     edge_var = roles["edge"]
     member_var = roles["member"]
     ctx = _Ctx()
@@ -446,9 +492,9 @@ def _score_fan(graph, anchor_pos: int, plan, libs) -> GroupResult:
     ctx.edge_times[edge_var] = times
     ctx.span = max(times) - min(times) if times else 0.0
     ctx.member_vals[member_var] = {
-        node: {(edge_var, "amount"): float(graph.amount[pos]),
-               (edge_var, "time"): float(graph.times[pos])}
-        for node, pos in rep.items()
+        node: [{(edge_var, "amount"): float(graph.amount[pos]),
+                (edge_var, "time"): float(graph.times[pos])} for pos in tied]
+        for node, tied in rep.items()
     }
     if plan.having is not None and not _eval_having(plan.having, ctx):
         return GroupResult(False, (), 0.0, (), truncated, expansions, 0.0)
@@ -466,6 +512,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
     anchor_t = int(graph.times[anchor_pos])
     m0 = int(graph.frm[anchor_pos])
     d_node = int(graph.to[anchor_pos])
+    if m0 == d_node:
+        # F2: the anchor is read as leg2 (m -> d) and the main loop skips
+        # m == d members, so a self-loop anchor can never complete —
+        # without this it scored through the fallback below.
+        return GroupResult(False, (), 0.0, (), False, 1, 0.0)
     s_var, m_var = roles["s"], roles["m"]
     leg1_var, leg2_var = roles["leg1"], roles["leg2"]
     in_m0, _ = graph.incoming(m0, anchor_t, window_s)
@@ -538,13 +589,30 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
         ctx.edge_times[leg2_var] = [float(graph.times[e]) for _, l2s in members.values() for e in l2s]
         all_t = ctx.edge_times[leg1_var] + ctx.edge_times[leg2_var]
         ctx.span = max(all_t) - min(all_t) if all_t else 0.0
-        ctx.member_vals[m_var] = {
-            mid: {(leg1_var, "amount"): float(graph.amount[l1s[-1]]),
-                  (leg1_var, "time"): float(graph.times[l1s[-1]]),
-                  (leg2_var, "amount"): float(graph.amount[l2s[-1]]),
-                  (leg2_var, "time"): float(graph.times[l2s[-1]])}
-            for mid, (l1s, l2s) in members.items()
-        }
+        # F1: one reading per tied leg1 x tied leg2 combo at the latest
+        # timestamps — the quantifier scores each and the best wins.
+        readings: dict[int, list[dict]] = {}
+        for mid, (l1s, l2s) in members.items():
+            tied_l1, cut1 = _tied_latest(graph, l1s)
+            tied_l2, cut2 = _tied_latest(graph, l2s)
+            if cut1 or cut2:
+                truncated = True
+            combos = [(a, b) for a in tied_l1 for b in tied_l2]
+            if len(combos) > MAX_TIED_READINGS:
+                truncated = True
+                combos = combos[:MAX_TIED_READINGS]
+            # F5: each combo is one (leg1, leg2) pair, so its gap is
+            # exact (leg2 - leg1, always positive here: every tied leg1
+            # predates the latest leg2). `leg1.gap` stays undefined.
+            readings[mid] = [
+                {(leg1_var, "amount"): float(graph.amount[a]),
+                 (leg1_var, "time"): float(graph.times[a]),
+                 (leg2_var, "amount"): float(graph.amount[b]),
+                 (leg2_var, "time"): float(graph.times[b]),
+                 (leg2_var, "gap"): float(graph.times[b]) - float(graph.times[a])}
+                for a, b in combos
+            ]
+        ctx.member_vals[m_var] = readings
         if plan.having is not None and not _eval_having(plan.having, ctx):
             continue
         if plan.soft is None:
@@ -584,13 +652,17 @@ def _score_gather(graph, anchor_pos: int, plan, libs) -> GroupResult:
         truncated = True
     g_list = [int(e) for e in g_edges.tolist()]
     p_list = [int(e) for e in p_edges.tolist()] + [int(anchor_pos)]
-    if g_list:
-        # Enforce `p.time > g.time`: a payout counts only if some
-        # collection precedes it (join semantics over the guard). The
-        # anchor is itself a p edge later than every g edge, so it always
-        # qualifies; every g edge trivially has a later p edge.
-        earliest_g = min(int(graph.times[e]) for e in g_list)
-        p_list = [e for e in p_list if int(graph.times[e]) > earliest_g]
+    if not g_list:
+        # F6: no collection means no (g, p) binding, so nothing is found
+        # even when `having` only gates the payout side.
+        return GroupResult(False, (), 0.0, (), truncated,
+                            len(g_list) + len(p_list), 0.0)
+    # Enforce `p.time > g.time`: a payout counts only if some
+    # collection precedes it (join semantics over the guard). The
+    # anchor is itself a p edge later than every g edge, so it always
+    # qualifies; every g edge trivially has a later p edge.
+    earliest_g = min(int(graph.times[e]) for e in g_list)
+    p_list = [e for e in p_list if int(graph.times[e]) > earliest_g]
     expansions = len(g_list) + len(p_list)
     x_nodes = sorted({int(graph.frm[e]) for e in g_list})
     y_nodes = sorted({int(graph.to[e]) for e in p_list})
@@ -603,20 +675,35 @@ def _score_gather(graph, anchor_pos: int, plan, libs) -> GroupResult:
     ctx.edge_times[p_var] = [float(graph.times[e]) for e in p_list]
     all_t = ctx.edge_times[g_var] + ctx.edge_times[p_var]
     ctx.span = max(all_t) - min(all_t) if all_t else 0.0
-    # Representative readings per member (most recent edge each side).
-    gx: dict[int, int] = {}
-    for e in sorted(g_list, key=lambda p: (int(graph.times[p]), int(p))):
-        gx[int(graph.frm[e])] = e
-    py: dict[int, int] = {}
-    for e in sorted(p_list, key=lambda p: (int(graph.times[p]), int(p))):
-        py[int(graph.to[e])] = e
+    # Representative readings per member (F1): tied edges at the latest
+    # timestamp each side, one reading each.
+    gx: dict[int, list[int]] = {}
+    by_sender: dict[int, list[int]] = {}
+    for e in g_list:
+        by_sender.setdefault(int(graph.frm[e]), []).append(e)
+    for n, es in by_sender.items():
+        tied, cut = _tied_latest(graph, es)
+        if cut:
+            truncated = True
+        gx[n] = tied
+    py: dict[int, list[int]] = {}
+    by_receiver: dict[int, list[int]] = {}
+    for e in p_list:
+        by_receiver.setdefault(int(graph.to[e]), []).append(e)
+    for n, es in by_receiver.items():
+        tied, cut = _tied_latest(graph, es)
+        if cut:
+            truncated = True
+        py[n] = tied
     ctx.member_vals[x_var] = {
-        n: {(g_var, "amount"): float(graph.amount[pos]),
-            (g_var, "time"): float(graph.times[pos])} for n, pos in gx.items()
+        n: [{(g_var, "amount"): float(graph.amount[pos]),
+             (g_var, "time"): float(graph.times[pos])} for pos in tied]
+        for n, tied in gx.items()
     }
     ctx.member_vals[y_var] = {
-        n: {(p_var, "amount"): float(graph.amount[pos]),
-            (p_var, "time"): float(graph.times[pos])} for n, pos in py.items()
+        n: [{(p_var, "amount"): float(graph.amount[pos]),
+             (p_var, "time"): float(graph.times[pos])} for pos in tied]
+        for n, tied in py.items()
     }
     if plan.having is not None and not _eval_having(plan.having, ctx):
         return GroupResult(False, (), 0.0, (), truncated, expansions, 0.0)
@@ -644,27 +731,35 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
     if len(in_b) > BUTTERFLY_MAX_PARTNERS:
         in_b = in_b[-BUTTERFLY_MAX_PARTNERS:]
         truncated = True
-    y2_by_pos: dict[int, int] = {}
-    for e in sorted(out_a.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
-        if int(graph.to[int(e)]) != b_node:
-            y2_by_pos[int(graph.to[int(e)])] = int(e)
-    x2_by_pos: dict[int, int] = {}
-    for e in sorted(in_b.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
-        if int(graph.frm[int(e)]) != a_node:
-            x2_by_pos[int(graph.frm[int(e)])] = int(e)
+    # Per-partner edge LISTS (F7): every parallel edge in the window is a
+    # candidate leg. The old code kept only the newest edge per pair, so
+    # `span(all) is not soon` (or any term rising with span) never saw the
+    # longer-span bindings and scored too low. Keeping every edge also
+    # fixes F1's butterfly leg: same-minute ties are all tried instead of
+    # picked by file order.
+    y2_edges: dict[int, list[int]] = {}
+    for e in out_a.tolist():
+        e = int(e)
+        if int(graph.to[e]) != b_node:
+            y2_edges.setdefault(int(graph.to[e]), []).append(e)
+    x2_edges: dict[int, list[int]] = {}
+    for e in in_b.tolist():
+        e = int(e)
+        if int(graph.frm[e]) != a_node:
+            x2_edges.setdefault(int(graph.frm[e]), []).append(e)
     expansions = len(out_a) + len(in_b) + 1
-    x2_nodes = sorted(x2_by_pos)
+    x2_nodes = sorted(x2_edges)
     # Per-x2 outgoing map (capped): which y2 does x2 pay within the window?
-    cross: dict[int, dict[int, int]] = {}
+    cross: dict[int, dict[int, list[int]]] = {}
     for x2 in x2_nodes:
         out_x, _ = graph.outgoing(x2, anchor_t, window_s)
         expansions += len(out_x)
         if len(out_x) > DEFAULT_MAX_FANOUT:
             out_x = out_x[-DEFAULT_MAX_FANOUT:]
             truncated = True
-        m: dict[int, int] = {}
-        for e in sorted(out_x.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
-            m[int(graph.to[int(e)])] = int(e)
+        m: dict[int, list[int]] = {}
+        for e in out_x.tolist():
+            m.setdefault(int(graph.to[int(e)]), []).append(int(e))
         cross[x2] = m
         if expansions > DEFAULT_MAX_EXPANSIONS:
             truncated = True
@@ -678,30 +773,55 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
         grade = (term_defs[soft.term],
                  resolve_term_args(soft.term, soft.args, term_defs),
                  soft.negated)
+
+    def _grade(span_s: float) -> float:
+        if grade is None:
+            return 1.0
+        tdef, targs, negated = grade
+        d = term_degree(tdef.shape, targs, span_s)
+        return 1.0 - d if negated else d
+
+    def _realize(lst: list[int], t: int) -> int:
+        # One leg with the binding's min time t: prefer an edge exactly at
+        # t (keyed-hash order, label-blind), else the earliest edge after
+        # it — t never exceeds the list's max, so one always exists.
+        at = [e for e in lst if int(graph.times[e]) == t]
+        if at:
+            return min(at, key=_hkey)
+        return min((e for e in lst if int(graph.times[e]) > t),
+                   key=lambda e: (int(graph.times[e]), _hkey(e)))
+
     best: tuple[float, list[int]] | None = None
-    for x2, x2_to_b in x2_by_pos.items():
+    earliest = anchor_t - window_s
+    for x2, x2_to_b_list in x2_edges.items():
         if x2 not in cross:
             # Truncated out of the cross map (built in id order, scored in
             # time order): skip it, not everything after it.
             continue
-        for y2, a_to_y2 in y2_by_pos.items():
-            x2_to_y2 = cross[x2].get(y2)
-            if x2_to_y2 is None:
+        for y2, a_to_y2_list in y2_edges.items():
+            x2_to_y2_list = cross[x2].get(y2)
+            if not x2_to_y2_list:
                 continue
-            legs = [x2_to_b, a_to_y2, x2_to_y2]
-            if min(int(graph.times[e]) for e in legs) < anchor_t - window_s:
-                continue
-            span = float(anchor_t - min(int(graph.times[e]) for e in legs))
-            if grade is None:
-                deg = 1.0
-            else:
-                tdef, targs, negated = grade
-                deg = term_degree(tdef.shape, targs, span)
-                if negated:
-                    deg = 1.0 - deg
-            witness = [x2_to_b, a_to_y2, x2_to_y2, int(anchor_pos)]
-            if best is None or deg > best[0]:
-                best = (deg, witness)
+            # The span only sees the oldest leg, so per pair the optimum
+            # is one of the achievable min times: a time t present in the
+            # three lists with every list holding an edge at or after t
+            # (i.e. t at most the smallest of the three maxima). Exact for
+            # any term shape — no newest/oldest extremes heuristic.
+            lists = (x2_to_b_list, a_to_y2_list, x2_to_y2_list)
+            maxima = [max(int(graph.times[e]) for e in lst) for lst in lists]
+            cap_t = min(maxima)
+            cands = sorted({int(graph.times[e]) for lst in lists for e in lst
+                            if earliest <= int(graph.times[e]) <= cap_t})
+            # Counted but not budget-breaked: the maps above are already
+            # cap-limited, and scoring must proceed over what they hold
+            # (M4: truncated maps still score their surviving partners).
+            expansions += len(cands)
+            for t in cands:
+                d = _grade(float(anchor_t - t))
+                if best is not None and d <= best[0]:
+                    continue
+                witness = [_realize(lst, t) for lst in lists] + [int(anchor_pos)]
+                best = (d, witness)
     if best is None:
         return GroupResult(False, (), 0.0, (), truncated, expansions, 0.0)
     deg, witness = best

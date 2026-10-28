@@ -59,6 +59,13 @@ def test_term_shapes() -> None:
     assert D.term_degree("trapezoid", (0.0, 0.0, 6.0, 48.0), 27.0) == pytest.approx(0.5)
     assert D.term_degree("ramp", (2.0, 5.0), 2.0) == 0.0
     assert D.term_degree("ramp", (2.0, 5.0), 5.0) == 1.0
+    # F3: degenerate shoulders are closed — at x == a == b the value is 1,
+    # matching "0 below a, rises linearly to 1 at b" (LANGUAGE.md 3.1).
+    assert D.term_degree("trapezoid", (2.0, 2.0, 4.0, 8.0), 2.0) == 1.0
+    assert D.term_degree("trapezoid", (2.0, 2.0, 4.0, 8.0), 1.99) == 0.0
+    assert D.term_degree("trapezoid", (0.0, 0.0, 6.0, 48.0), 0.0) == 1.0
+    assert D.term_degree("trapezoid", (0.0, 2.0, 6.0, 6.0), 6.0) == 1.0
+    assert D.term_degree("triangle", (1.0, 1.0, 2.0), 1.0) == 1.0
     # tolerance is relative to the larger side: 1 - 10/(0.2*110) = 12/22.
     assert D.tol_degree(Pct(0.2), 100.0, 110.0) == pytest.approx(12 / 22)
 

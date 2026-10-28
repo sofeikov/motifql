@@ -192,6 +192,14 @@ tests pass.
 
 ## 8. Eval-leak correction (Nov 1): honest ranking
 
+> STALE (Nov 2, issue #11): F1 (same-minute ties picked by file order in
+> the group executors) reintroduces the E1/E2 leak through the motif
+> scores themselves — reversing only the same-minute order moves the
+> ALL_FLAGGED scatter hits 13/14 → 8/9 and holdout fires 2 → 1 — and F2
+> (self-loop scatter anchors) moves the nonzero counts 24/16 → 20/13.
+> The numbers below predate the F1/F2 fixes. A full RQ1 rerun is needed
+> to correct them; it has not been run (no long unpruned batches).
+
 A second review thread (issue #6, E1–E6) found the budget tables
 measured file order, not ranking: score ties broke by `transfer_id`
 (raw CSV order, which clusters laundering rows early in the day), and

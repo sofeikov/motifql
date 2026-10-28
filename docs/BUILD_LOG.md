@@ -155,3 +155,28 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   LANGUAGE.md, 3 tests); killed graded-having (no new power),
   pairing/B2 (overlap + engine cost), weights (no customer).
 - Self-loop group-inclusion pinned; no full replays (94/94 pass).
+
+## Nov 2 — group-executor findings (issue #11, F1–F7)
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark),
+from a post-#6 review of main with independent repros:
+
+- F1 (high): same-minute member readings picked by file order leaked the
+  label back into scores. Same-timestamp edges are simultaneous now: the
+  member body scores over every tied reading and the best wins, in all
+  four executors (keyed-hash order + 64-reading cap as backstop).
+- F2: scatter self-loop anchors no longer complete via the fallback
+  (main loop skips m == d; the anchor is leg2).
+- F3: `trapezoid`/`triangle` degenerate shoulders closed (1 at a == b).
+- F4: member account refs (`r.in_degree`) E_PLAN instead of scoring a
+  silent empty-set constant; LANGUAGE.md notes account fields uncarried.
+- F5: scatter fills `leg2.gap` (exact per-pair forward delay); time
+  minus time infers duration, so `leg2.time - leg1.time <= 1h` checks.
+- F6: gather with no collections is not-found even when `having` only
+  gates payouts.
+- F7: butterfly tries every in-window edge per pair via achievable
+  min-times (exact for any term shape; also fixes F1's butterfly leg).
+- Verified: 7 focused tests (101/101 pass) plus a randomized
+  butterfly-vs-brute-force differential (150 graphs x anchors x 3 term
+  shapes, exact). Oct 30 §8 marked stale pending an RQ1 rerun (F1/F2
+  move those numbers; no long batches run).
