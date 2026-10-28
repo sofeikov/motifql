@@ -71,7 +71,7 @@ def test_group_roles_and_windows() -> None:
     assert isinstance(fan, GroupPlan)
     assert fan.kind == "fan" and fan.role("key") == "s" and fan.window_s == 4 * 86400.0
     scat = compile_motif(doc, "scatter_gather")
-    assert scat.kind == "scatter" and scat.window_s == 48 * 3600.0
+    assert scat.kind == "scatter" and scat.window_s == 7 * 86400.0
     assert (scat.role("s"), scat.role("m"), scat.role("d")) == ("s", "m", "d")
     gath = compile_motif(doc, "gather_scatter")
     assert gath.kind == "gather" and gath.role("c") == "c"
@@ -194,8 +194,8 @@ def test_scatter_fires_with_three_members() -> None:
 def test_scatter_aggregates_count_every_valid_leg() -> None:
     # E6: aggregates range over every edge joining a valid pair, not just
     # one pair per member. M1 is paid 50 + 50 and forwards 100: the sums
-    # balance exactly (previously the second 50 was dropped and the sum
-    # term scored 0.375, missing emit).
+    # balance exactly (dropping the second 50 would score the sum term
+    # 0.375 and miss emit).
     g = TemporalGraph.from_transfers(_frame([
         (10, "001", "S", "002", "M1", 50.0), (15, "001", "S", "002", "M1", 50.0),
         (20, "001", "S", "002", "M2", 100.0), (25, "001", "S", "002", "M3", 100.0),
@@ -205,7 +205,7 @@ def test_scatter_aggregates_count_every_valid_leg() -> None:
     ]))
     doc = _doc()
     res = score_group(g, 8, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
-    assert res.found and res.top_score == pytest.approx(0.833333, rel=1e-3)
+    assert res.found and res.top_score == pytest.approx(1.0)
     assert sorted(int(g.transfer_id[e]) for e in res.witness) == list(range(9))
 
 
@@ -236,8 +236,9 @@ def test_scatter_pairs_older_leg1_when_newest_is_stale() -> None:
 
 
 def test_gather_count_balance_gives_partial_credit_off_by_one() -> None:
-    # M6: `within 2` scores a diff-1 imbalance 0.5 — linear tolerance is
-    # 0 at exactly the width, so `within 1` zeroed the whole product.
+    # M6 + Nov 1 tuning: `within 4` scores a diff-1 imbalance 0.75 —
+    # linear tolerance is 0 at exactly the width, so narrower widths
+    # zeroed pooled truth (diff-2 scores 0.5, the emit boundary).
     g = TemporalGraph.from_transfers(_frame([
         (10, "001", "X1", "002", "C", 100.0), (20, "001", "X2", "002", "C", 100.0),
         (30, "001", "X3", "002", "C", 100.0),
@@ -246,7 +247,7 @@ def test_gather_count_balance_gives_partial_credit_off_by_one() -> None:
     doc = _doc()
     res = score_group(g, 4, compile_motif(doc, "gather_scatter"), libs_from_doc(doc))
     assert not res.found
-    assert res.top_score == pytest.approx(0.25)
+    assert res.top_score == pytest.approx(0.375)
 
 
 def test_gather_drops_payout_before_any_collection() -> None:
