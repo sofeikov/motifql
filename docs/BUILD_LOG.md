@@ -180,3 +180,21 @@ from a post-#6 review of main with independent repros:
   butterfly-vs-brute-force differential (150 graphs x anchors x 3 term
   shapes, exact). Oct 30 §8 marked stale pending an RQ1 rerun (F1/F2
   move those numbers; no long batches run).
+
+## Nov 3 — Oct 31 stage: Spark compiler + RQ4 first numbers
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark),
+overnight:
+
+- `src/motifql/models/`: Spark client (Model API, prompt-hash disk
+  cache, retries incl. flaky content-filter 400s) + §7.1 repair loop
+  (error feedback, sanity fire-rate feedback, crashes-as-feedback).
+- `eval/rq4_items.py`: 50-item English set with verified references
+  (all compile; committed test pins that).
+- `eval/rq4.py`: three-arm harness (repair / repair_nosanity /
+  oneshot), train-sample witness Jaccard, resume + reference cache.
+- `docs/2026-11-03-rq4.md`: first numbers. Compile-error feedback
+  works (3/3 E_PLAN fixes, nosanity 47/47); sanity-rate feedback
+  HURTS (repair Jaccard 0.641 vs 0.954 — rare-but-correct motifs get
+  "loosen"ed into wrong ones); provider content filter flaky on 3
+  benign items. 12 tests (112/112 pass).
