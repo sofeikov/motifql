@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 
 from motifql.parser import (
-    AmountConsCond, And, Approx, Call, Comparison, Dur, GapTermCond, IsTerm,
+    AmountConsCond, And, Approx, Arith, Call, Comparison, Dur, GapTermCond, IsTerm,
     Money, Not, Num, Or, Pct, Quantified, Ref,
 )
 
@@ -42,7 +42,7 @@ def resolve_term_args(term_name: str, use_args: tuple, term_defs: dict) -> tuple
     tdef = term_defs[term_name]
     if len(use_args) != len(tdef.params):
         raise ValueError(f"term `{term_name}` takes {len(tdef.params)} arguments")
-    scope = {formal: _lit(actual) for formal, actual in zip(tdef.params, use_args)}
+    scope = {formal: _eval_term_arg(actual, {}) for formal, actual in zip(tdef.params, use_args)}
     return tuple(_eval_term_arg(a, scope) for a in tdef.args)
 
 
@@ -57,10 +57,16 @@ def _eval_term_arg(node: object, scope: dict[str, float]) -> float:
         return node.fraction
     if isinstance(node, Ref) and len(node.parts) == 1 and node.parts[0] in scope:
         return scope[node.parts[0]]
-    if isinstance(node, Comparison) and node.op in ("+", "-", "*", "/"):
+    if isinstance(node, Arith):
         x, y = _eval_term_arg(node.left, scope), _eval_term_arg(node.right, scope)
-        return {"+": x + y, "-": x - y, "*": x * y, "/": x / y}[node.op]
+        return _apply_arith(node.op, x, y)
     raise ValueError(f"non-literal term argument: {node!r}")
+
+
+def _apply_arith(op: str, x: float, y: float) -> float:
+    if op == "/" and y == 0:
+        raise ValueError("division by zero in arithmetic")
+    return {"+": x + y, "-": x - y, "*": x * y, "/": x / y}[op]
 
 
 def term_degree(shape: str, args: tuple[float, ...], x: float) -> float:
@@ -238,7 +244,7 @@ def _eval_step(node: object, vals: dict, pvals: dict | None,
         if x is None or y is None:
             return None
         return tol_degree(node.tol, x, y)
-    if isinstance(node, Comparison) and node.op not in ("+", "-", "*", "/"):
+    if isinstance(node, Comparison):
         x = _resolve_arith(node.left, vals, pvals)
         y = _resolve_arith(node.right, vals, pvals)
         if x is None or y is None:
@@ -262,6 +268,12 @@ def _resolve_arith(node: object, vals: dict, pvals: dict | None) -> float | None
         return _lit(node)
     if isinstance(node, Ref):
         return _resolve_ref(node, vals, pvals)
+    if isinstance(node, Arith):
+        x = _resolve_arith(node.left, vals, pvals)
+        y = _resolve_arith(node.right, vals, pvals)
+        if x is None or y is None or (node.op == "/" and y == 0):
+            return None
+        return _apply_arith(node.op, x, y)
     raise ValueError(f"cannot evaluate arithmetic per step: {node!r}")
 
 
@@ -293,6 +305,9 @@ def _eval_arith(node: object, steps: list[int], graph) -> float:
     if isinstance(node, Call) and node.name == "span":
         times = [int(graph.times[e]) for e in steps]
         return float(times[-1] - times[0])
+    if isinstance(node, Arith):
+        return _apply_arith(node.op, _eval_arith(node.left, steps, graph),
+                            _eval_arith(node.right, steps, graph))
     raise ValueError(f"cannot evaluate arithmetic: {node!r}")
 
 

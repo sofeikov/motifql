@@ -22,8 +22,10 @@ the latest edge. Consequences the executors rely on:
 
 Hub control mirrors the path matcher: per-list caps (most recent first) and
 a per-anchor expansion cap. Hitting a cap marks `truncated` and stops that
-lookup; the score is then a lower bound. Groups have no score pruning (the
-aggregates are not monotone as the group grows), so top_score is exact.
+lookup. Unlike path motifs, a truncated group score is not a lower bound:
+dropping members can raise non-monotone aggregates (means, most/few), so
+truncated results may overstate. Groups have no score pruning, so
+untruncated top_score is exact.
 
 Usage:
     from motifql.parser import parse_file
@@ -42,7 +44,7 @@ import numpy as np
 
 from motifql.degrees import libs_from_doc, resolve_term_args, term_degree, tol_degree  # noqa: F401
 from motifql.parser import (
-    AllArgs, And, Approx, Call, Comparison, DistinctArg, Dur, IsTerm, Money, Not, Num,
+    AllArgs, And, Approx, Arith, Call, Comparison, DistinctArg, Dur, IsTerm, Money, Not, Num,
     Or, Pct, Quantified, Ref,
 )
 
@@ -105,6 +107,11 @@ def _arith(node: object, ctx: _Ctx) -> float:
     """Value of a group-level aggregate or literal (no member context)."""
     if isinstance(node, (Num, Dur, Money, Pct)):
         return _lit(node)
+    if isinstance(node, Arith):
+        x, y = _arith(node.left, ctx), _arith(node.right, ctx)
+        if node.op == "/" and y == 0:
+            raise ValueError("division by zero in arithmetic")
+        return {"+": x + y, "-": x - y, "*": x * y, "/": x / y}[node.op]
     if isinstance(node, Call):
         vals = _edge_values(node, ctx)
         if node.name == "count":
@@ -302,7 +309,7 @@ def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str) -> float
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
         return 1.0 - deg if node.negated else deg
-    if isinstance(node, Comparison) and node.op not in ("+", "-", "*", "/"):
+    if isinstance(node, Comparison):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
         if x is None or y is None:
@@ -321,6 +328,12 @@ def _member_arith(node: object, vals: dict, ctx: _Ctx) -> float | None:
         if len(node.parts) == 2 and (node.parts[0], node.parts[1]) in vals:
             return vals[(node.parts[0], node.parts[1])]
         return None
+    if isinstance(node, Arith):
+        x = _member_arith(node.left, vals, ctx)
+        y = _member_arith(node.right, vals, ctx)
+        if x is None or y is None or (node.op == "/" and y == 0):
+            return None
+        return {"+": x + y, "-": x - y, "*": x * y, "/": x / y}[node.op]
     if isinstance(node, Call) and node.name in ("avg", "sum", "min", "max"):
         try:
             return _arith(node, ctx)
@@ -505,9 +518,6 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
             leg1 = leg1_by_sender[s]
             if int(graph.times[int(anchor_pos)]) > int(graph.times[leg1]):
                 members[m0] = (int(leg1), int(anchor_pos))
-        if len(members) < 2 and plan.having is not None:
-            # Having will reject; skip the soft work but keep looking.
-            continue
         ctx = _Ctx()
         ctx.counts[m_var] = len(members)
         l1 = [float(graph.amount[l1]) for l1, _ in members.values()]
@@ -661,7 +671,9 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
     best: tuple[float, list[int]] | None = None
     for x2, x2_to_b in x2_by_pos.items():
         if x2 not in cross:
-            break
+            # Truncated out of the cross map (built in id order, scored in
+            # time order): skip it, not everything after it.
+            continue
         for y2, a_to_y2 in y2_by_pos.items():
             x2_to_y2 = cross[x2].get(y2)
             if x2_to_y2 is None:

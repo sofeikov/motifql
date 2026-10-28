@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from motifql import checks
 from motifql.degrees import STORED_FIELDS, resolve_term_args
 from motifql.parser import (
-    AllArgs, AmountConsCond, And, Approx, Call, Comparison, DistinctArg, Document, Dur,
+    AllArgs, AmountConsCond, And, Approx, Arith, Call, Comparison, DistinctArg, Document, Dur,
     GapTermCond, IsTerm, Money, Motif, Num, Pct, Quantified, Ref,
 )
 
@@ -249,6 +249,9 @@ def compile_motif(doc: Document, name: str, stats=None):
         raise PlanError("E_PLAN", name, "the single edge must be variable-length `*m..n`.",
                         "write the edge as `-[e:transfer*m..n]->`.")
     edge = pat.edges[0]
+    if edge.min_hops is not None and edge.min_hops < 2:
+        raise PlanError("E_PLAN", name, "single-hop path witnesses (`*1..n`) are not carried.",
+                        "write `*2..n`: every witness needs the anchor plus at least one more edge.")
     if edge.direction == "in":
         raise PlanError("E_PLAN", name, "in-edges (`<-[e]-`) are not carried by the backward walk yet.",
                         "reverse the arrow so edges point away from the anchor, or wait for Oct 30.")
@@ -337,6 +340,8 @@ def _describe(node: object) -> str:
         return f"{'.'.join(node.base.parts) if isinstance(node.base, Ref) else '?'} is {node.term}"
     if isinstance(node, Comparison):
         return f"{_describe(node.left)} {node.op} {_describe(node.right)}"
+    if isinstance(node, Arith):
+        return f"{_describe(node.left)} {node.op} {_describe(node.right)}"
     if isinstance(node, Ref):
         return ".".join(node.parts)
     if isinstance(node, Call):
@@ -382,6 +387,10 @@ def _validate_soft(motif: Motif, edge_var: str, doc: Document) -> None:
                 raise PlanError("E_PLAN", motif.name,
                                 f"field `{rest[0]}` is not carried by the graph store yet.",
                                 "use time, amount or gap; other fields land with store growth.")
+            if id(node) not in quantified and id(node) not in span_args:
+                raise PlanError("E_PLAN", motif.name,
+                                f"`{'.'.join(node.parts)}` reads one step but sits outside any quantifier.",
+                                f"write `each {edge_var}: ...` around it, or grade a witness aggregate.")
         elif isinstance(node, Ref) and len(node.parts) == 1:
             raise PlanError("E_PLAN", motif.name,
                             f"bare `{node.parts[0]}` has no degree in soft.",

@@ -33,8 +33,9 @@ Group soft reuses `degrees.py` atoms (`term_degree`, `tol_degree`,
 (each/all/some/at-least/most/few/@name, same semantics as paths).
 Hub caps mirror the path matcher (1,000 per list, 50K expansions);
 hitting one marks `truncated`, never a silent cut. Groups have no score
-pruning — aggregates are not monotone as the group grows — so `top_score`
-is exact everywhere.
+pruning, so untruncated `top_score` is exact — but truncated group
+scores are not lower bounds (dropping members can raise means and
+most/few degrees), so truncated+found results may overstate.
 
 `eval/rq1.py` — replays all 8 motifs over train (Sep 3–7, 1,862,302
 anchors) and holdout (Sep 8–10), ranks holdout per day by `top_score`
@@ -178,3 +179,13 @@ RANDOM 3, FAN-IN 2; `bipartite_butterfly` still BIPARTITE 0/9, FAN-IN
 collapsed (thresholds can come down), gather gained a truth hit, and
 the §3 degeneracy warning now covers `round_trip` too (24 nonzeros/day
 cannot fill a 500/day budget). 75/75 tests pass.
+
+## 7. Medium-fix update (Oct 31, same day)
+
+The M1–M7 pass (issue #6) changes one reference number: M6 widens the
+gather count-balance to `within 2`, so diff-1 groups score 0.5 instead
+of 0 — `gather_scatter` moves to 31,284/day train, 12,828/day holdout
+(38,485 alerts), still GATHER 1/2 with cross-pattern BIPARTITE 3,
+RANDOM 3, FAN-IN 2, CYCLE 1. All other motifs replay bit-identical
+(M4/M5 never trigger on the reference shapes at these caps). 84/84
+tests pass.

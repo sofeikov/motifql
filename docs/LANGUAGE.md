@@ -219,8 +219,10 @@ For each anchor transfer and each motif that emits, the engine returns:
 ```
 
 `degrees` is the explanation: which condition held the score down, and where.
-`truncated` is true when a hub cap cut the search short, so the score is a
-lower bound (see design doc, §6.5).
+`truncated` is true when a hub cap cut the search short. For path motifs
+the score is then a lower bound (see design doc, §6.5); for group motifs
+it is not — dropping members can raise non-monotone aggregates, so a
+truncated group score may overstate.
 
 ## 5. Static checks
 

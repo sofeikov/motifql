@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from motifql.parser import (
-    AllArgs, And, Approx, Call, Comparison, DistinctArg, Document, Dur,
+    AllArgs, And, Approx, Arith, Call, Comparison, DistinctArg, Document, Dur,
     GroupClause, IsTerm, Money, Motif, Neg, Not, Num, Or, Pct, Quantified,
     Ref,
 )
@@ -250,6 +250,8 @@ class _Checker:
             return self._infer(node.body, scope)
         if isinstance(node, Comparison) or isinstance(node, (And, Or, Not)):
             return _BOOL
+        if isinstance(node, Arith):
+            return self._infer_arith(node, scope)
         if isinstance(node, (Approx, IsTerm)):
             return _DEGREE
         if isinstance(node, Quantified):
@@ -299,11 +301,25 @@ class _Checker:
         if isinstance(node, Ref) and len(node.parts) == 1 and node.parts[0] in subst:
             unit = subst[node.parts[0]]
             return {unit} if unit in (_TIME, _MONEY, _DURATION, _NUMBER) else set()
-        if isinstance(node, Comparison) and node.op in ("+", "-", "*", "/"):
+        if isinstance(node, Arith):
             return self._arg_domains(node.left, subst) | self._arg_domains(node.right, subst)
         if isinstance(node, Neg):
             return self._arg_domains(node.body, subst)
         return set()
+
+    def _infer_arith(self, node, scope: dict[str, str]) -> str:
+        lt, rt = self._infer(node.left, scope), self._infer(node.right, scope)
+        if "unknown" in (lt, rt):
+            return "unknown"
+        if node.op == "/" and lt == rt:
+            return _NUMBER  # a ratio of like units is a plain number
+        if lt == rt:
+            return lt
+        if _NUMBER in (lt, rt):
+            other = rt if lt == _NUMBER else lt
+            if other in (_MONEY, _DURATION, _TIME):
+                return other  # scaling: 0.85 * limit
+        return "unknown"
 
     def _infer_ref(self, ref: Ref, scope: dict[str, str]) -> str:
         head = ref.parts[0]
@@ -336,6 +352,16 @@ class _Checker:
                     self.err("E_UNIT", motif, f"`~=` compares {lt} with {rt}.",
                              "give both sides the same unit.")
                 self._check_tol(motif, node, lt)
+            elif isinstance(node, Arith):
+                lt, rt = self._infer(node.left, scope), self._infer(node.right, scope)
+                if "unknown" in (lt, rt):
+                    continue
+                if self._infer_arith(node, scope) != "unknown":
+                    continue
+                if {lt, rt} <= {_TIME, _DURATION}:
+                    continue  # temporal arithmetic evaluates numerically
+                self.err("E_UNIT", motif, f"`{node.op}` mixes {lt} with {rt}.",
+                         "use the same unit on both sides (a plain number may scale money or durations).")
             elif isinstance(node, IsTerm) and node.term not in _CRISP_TERMS \
                     and node.term in self.terms:
                 base = self._infer(node.base, scope)
@@ -391,6 +417,8 @@ def _children(node: object) -> list:
         return [node.body]
     if isinstance(node, Comparison):
         return [node.left, node.right]
+    if isinstance(node, Arith):
+        return [node.left, node.right]
     if isinstance(node, Approx):
         return [node.left, node.right, node.tol]
     if isinstance(node, IsTerm):
@@ -419,6 +447,8 @@ def _walk(node: object):
         elif isinstance(cur, Not):
             stack.append(cur.body)
         elif isinstance(cur, Comparison):
+            stack.extend((cur.left, cur.right))
+        elif isinstance(cur, Arith):
             stack.extend((cur.left, cur.right))
         elif isinstance(cur, Approx):
             stack.extend((cur.left, cur.right, cur.tol))

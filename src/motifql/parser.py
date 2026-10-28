@@ -98,6 +98,13 @@ class Comparison:
 
 
 @dataclass(frozen=True)
+class Arith:
+    op: str  # "+" | "-" | "*" | "/"
+    left: object
+    right: object
+
+
+@dataclass(frozen=True)
 class Approx:
     left: object
     right: object
@@ -422,8 +429,8 @@ class _ToAST(Transformer):
         args = tuple(rest[1]) if len(rest) > 1 else ()
         return IsTerm(base, negated, term, args)
 
-    def binop(self, children: list) -> Comparison:
-        return Comparison(children[1].value, children[0], children[2])
+    def binop(self, children: list) -> Arith:
+        return Arith(children[1].value, children[0], children[2])
 
     def neg(self, children: list) -> Neg:
         return Neg(children[0])
