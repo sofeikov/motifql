@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Fuzzy, time-ordered money-flow motifs for transaction monitoring"
 requires-python = ">= 3.11"
 dependencies = [
+    "lark>=1.3.1",
     "lightgbm>=4.7.0",
     "numba>=0.60",
     "numpy>=2.0",

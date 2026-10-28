@@ -226,7 +226,8 @@ class TemporalGraph:
             self._floors_clean = False
 
     def _rebase(
-        self, ptr: np.ndarray, times: np.ndarray, lo: np.ndarray, node: int
+        self, ptr: npt.NDArray[np.int64], times: npt.NDArray[np.int64],
+        lo: npt.NDArray[np.int64], node: int
     ) -> int:
         """Advance one node's eviction floor past the watermark; return it."""
         base = int(ptr[node])

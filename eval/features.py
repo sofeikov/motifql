@@ -16,6 +16,7 @@ import warnings
 
 import polars as pl
 import numpy as np
+import numpy.typing as npt
 import numba
 
 log = logging.getLogger("features")
@@ -149,7 +150,7 @@ def trailing_distinct(df: pl.DataFrame, acct_col: str, peer_col: str,
     log.info("  %s: %d accounts, largest %d transfers",
              prefix, len(bounds) - 1, np.diff(bounds).max())
     freq = np.zeros(int(peer.max()) + 1, dtype=np.int64)
-    cols: dict[str, np.ndarray] = {}
+    cols: dict[str, npt.NDArray[np.float32]] = {}
     for name, wus in WINDOWS.items():
         D = np.empty(n, dtype=np.float32)
         for b in range(len(bounds) - 1):
