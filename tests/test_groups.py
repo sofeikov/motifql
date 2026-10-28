@@ -101,6 +101,18 @@ def test_non_v0_shapes_still_eplan() -> None:
                                  " soft each b: e.amount ~= prev.amount within 10% }"), "t")
 
 
+def test_group_member_account_fields_eplan() -> None:
+    # F4: `r.in_degree` reads an account field the executors never fill,
+    # so every member is skipped and the quantifier returns its empty-set
+    # constant (`each` -> 1, `most` -> 0) regardless of the data. Reject
+    # loudly like path motifs do instead of scoring a silent constant.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER + "motif t { match (s:account) -[e:transfer]-> (r:account)"
+                                 " group by s over r window 1d"
+                                 " having count(distinct r) >= 2"
+                                 " soft most r: r.in_degree <= 5 }"), "t")
+
+
 # -- fan oracle ------------------------------------------------------------
 
 def test_fan_out_matches_brute_force() -> None:
@@ -249,6 +261,40 @@ def test_scatter_pairs_older_leg1_when_newest_is_stale() -> None:
     assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1, 2, 4]
 
 
+def test_scatter_self_loop_anchor_never_completes() -> None:
+    # F2: the main loop skips m == d members, so a self-loop anchor
+    # (m0 == d) must not complete through the fallback either. Anchor 3
+    # is A2 -> A2; it scores 0.5 via the fallback without the fix.
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "002", "A1", 100.0), (1, "001", "S", "002", "A2", 100.0),
+        (10, "002", "A1", "002", "A2", 100.0), (20, "002", "A2", "002", "A2", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 3, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert not res.found and res.top_score == 0.0
+
+
+def test_scatter_leg2_gap_scores_forwarding_delay() -> None:
+    # F5: `leg2.gap` is the member's forward delay (leg2 - leg1). Both
+    # mids forward after 10m, so `most m: leg2.gap is soon` is 1.0 —
+    # without the reading every member is skipped and `most` gives 0.
+    doc = parse_text(
+        "term soon = trapezoid(0h, 0h, 6h, 48h)\n"
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 2"
+        " soft most m: leg2.gap is soon"
+        " score min emit when score >= 0.5 }")
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "002", "M1", 100.0), (10, "002", "M1", "003", "D", 100.0),
+        (20, "001", "S", "002", "M2", 100.0), (30, "002", "M2", "003", "D", 100.0),
+    ]))
+    res = score_group(g, 3, compile_motif(doc, "t"), libs_from_doc(doc))
+    assert res.found and res.top_score == pytest.approx(1.0)
+
+
 def test_gather_count_balance_gives_partial_credit_off_by_one() -> None:
     # M6 + Nov 1 tuning: `within 4` scores a diff-1 imbalance 0.75 —
     # linear tolerance is 0 at exactly the width, so narrower widths
@@ -278,6 +324,28 @@ def test_gather_drops_payout_before_any_collection() -> None:
     res = score_group(g, 6, compile_motif(doc, "gather_scatter"), libs_from_doc(doc))
     assert res.found and res.top_score == pytest.approx(1.0)
     assert sorted(int(g.transfer_id[e]) for e in res.witness) == [1, 2, 3, 4, 5, 6]
+
+
+def test_gather_without_collections_is_not_found() -> None:
+    # F6: with no incoming edge there is no (g, p) binding, so nothing
+    # should be found — even when `having` only gates the payout side.
+    # A0 -> A1 @0, anchor A0 -> A2 @60, nothing ever pays A0.
+    doc = parse_text(
+        "term several = ramp(1, 3)\n"
+        "motif t { match (x:account) -[g:transfer]-> (c:account),"
+        " (c) -[p:transfer]-> (y:account)"
+        " group by c over x, y window 4d"
+        " where p.time > g.time"
+        " having count(distinct y) >= 2"
+        " soft count(distinct y) is several"
+        " score min emit when score >= 0.5 }"
+    )
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "A0", "002", "A1", 100.0),
+        (60, "001", "A0", "002", "A2", 100.0),
+    ]))
+    res = score_group(g, 1, compile_motif(doc, "t"), libs_from_doc(doc))
+    assert not res.found and res.top_score == 0.0
 
 
 # -- butterfly -------------------------------------------------------------
@@ -396,6 +464,23 @@ def test_butterfly_without_soft_scores_one() -> None:
     assert res.found and res.score == pytest.approx(1.0)
 
 
+def test_butterfly_tries_older_parallel_edges() -> None:
+    # F7: only the newest edge per pair was tried, so `span(all) is not
+    # soon` scored 0 here — the older X2 -> Y1 leg (span 71.7h, not-soon
+    # 1.0) was never attempted. Every in-window edge per pair counts now.
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "X2", "002", "Y1", 50.0),
+        (4000, "001", "X1", "002", "Y1", 50.0),
+        (4100, "001", "X1", "002", "Y2", 50.0),
+        (4200, "001", "X2", "002", "Y1", 50.0),
+        (4300, "001", "X2", "002", "Y2", 50.0),
+    ]))
+    doc = _butterfly_doc("span(all) is not soon")
+    res = score_butterfly(g, 4, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.found and res.top_score == pytest.approx(1.0)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1, 2, 4]
+
+
 def test_member_skip_propagates_through_operators() -> None:
     # E5 mirror: an all-skipped member body is skipped (None), not 1.0/0.0.
     from motifql.groups import _Ctx, _eval_member
@@ -443,3 +528,41 @@ def test_all_but_forgives_one_bad_member() -> None:
     plan, libs = _plan("all but 1")
     res = score_group(g, 3, plan, libs)
     assert res.found and res.top_score == pytest.approx(1.0)
+
+
+def test_same_minute_ties_are_file_order_free() -> None:
+    # F1: same-minute edges are simultaneous — swapping two tied rows in
+    # the file must not change the score. The member predicate is scored
+    # over every tied edge and the best reading wins (E6's rule).
+    doc = parse_text(
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 2"
+        " soft most m: leg2.amount ~= leg1.amount within 15%"
+        " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    base = [(0, "001", "S", "002", "M1", 1000.0), (1, "001", "S", "002", "M0", 1000.0),
+            (10, "002", "M1", "003", "D", 100.0), (10, "002", "M1", "003", "D", 1000.0),
+            (20, "002", "M0", "003", "D", 1000.0)]
+    swapped = [base[0], base[1], base[3], base[2], base[4]]
+    a = score_group(TemporalGraph.from_transfers(_frame(base)), 4, plan, libs)
+    b = score_group(TemporalGraph.from_transfers(_frame(swapped)), 4, plan, libs)
+    assert a.top_score == b.top_score == pytest.approx(1.0)
+    assert a.found and b.found
+    # Same rule on the fan side: R2's tied 50/100 readings both count.
+    fdoc = parse_text(
+        "motif t { match (s:account) -[e:transfer]-> (r:account)"
+        " group by s over r window 1d"
+        " having count(distinct r) >= 2"
+        " soft most r: e.amount ~= 100 USD within 10 USD"
+        " score min emit when score >= 0.5 }")
+    fplan, flibs = compile_motif(fdoc, "t"), libs_from_doc(fdoc)
+    fbase = [(0, "001", "S", "002", "R1", 100.0),
+             (10, "001", "S", "002", "R2", 50.0), (10, "001", "S", "002", "R2", 100.0),
+             (20, "001", "S", "002", "R3", 100.0)]
+    fswapped = [fbase[0], fbase[2], fbase[1], fbase[3]]
+    fa = score_group(TemporalGraph.from_transfers(_frame(fbase)), 3, fplan, flibs)
+    fb = score_group(TemporalGraph.from_transfers(_frame(fswapped)), 3, fplan, flibs)
+    assert fa.top_score == fb.top_score == pytest.approx(1.0)

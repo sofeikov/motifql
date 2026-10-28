@@ -679,10 +679,17 @@ def _validate_group_soft(motif: Motif, kind: str, roles: dict[str, str], doc: Do
                                 "compare the group's edge amounts/times directly.")
             if head in edge_vars and len(rest) == 1 and rest[0] in STORED_FIELDS:
                 continue
-            if head in ("avg", "sum", "min", "max") or head in member_vars:
-                # `avg(e.amount)`-style call args surface as Refs under Call;
-                # memberVAR-scoped refs are checked at the Quantified level.
+            if head in ("avg", "sum", "min", "max"):
+                # `avg(e.amount)`-style call args surface as Refs under Call.
                 continue
+            if head in member_vars:
+                # F4: member readings only carry edge fields, so a
+                # member-headed ref never resolves — every member is
+                # skipped and the quantifier returns a silent constant.
+                raise PlanError("E_PLAN", motif.name,
+                                f"reference `{'.'.join(node.parts)}` reads a member account field, "
+                                "which group readings do not carry.",
+                                "grade edge fields (`e.amount`, `leg2.time`) or aggregates.")
             raise PlanError("E_PLAN", motif.name,
                             f"reference `{'.'.join(node.parts)}` is not a group field.",
                             "use the group edge/member amount, time or gap fields.")

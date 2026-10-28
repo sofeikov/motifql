@@ -314,6 +314,8 @@ class _Checker:
             return "unknown"
         if node.op == "/" and lt == rt:
             return _NUMBER  # a ratio of like units is a plain number
+        if node.op == "-" and lt == _TIME and rt == _TIME:
+            return _DURATION  # F5: time minus time is a duration, not a time
         if lt == rt:
             return lt
         if _NUMBER in (lt, rt):

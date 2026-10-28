@@ -55,6 +55,18 @@ def test_time_bound_required() -> None:
         " where span(e) <= 7d }")
 
 
+def test_time_minus_time_is_duration() -> None:
+    # F5: `leg2.time - leg1.time <= 1h` compares a duration with a
+    # duration — time minus time is not time.
+    assert _codes(
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 2"
+        " soft most m: leg2.time - leg1.time <= 1h }") == []
+
+
 def test_unit_mismatch_rejected() -> None:
     assert "E_UNIT" in _codes(
         "motif t { match (a:account) -[e:transfer*2..5]-> (a)"

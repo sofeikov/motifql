@@ -73,9 +73,9 @@ def term_degree(shape: str, args: tuple[float, ...], x: float) -> float:
     """Membership degree of x in a term shape (args already in x's unit)."""
     if shape == "trapezoid":
         a, b, c, d = args
-        if x <= a or x >= d:
+        if x < a or x > d:
             return 0.0
-        if x <= b:
+        if x < b:
             return 1.0 if b == a else (x - a) / (b - a)
         if x <= c:
             return 1.0
