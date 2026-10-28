@@ -216,9 +216,12 @@ def _as_step_atom(item: object, edge_var: str):
             return GapTermCond(edge_var, item.term, item.args, item.negated)
         return None
     if isinstance(item, Approx):
-        if (isinstance(item.left, Ref) and item.left.parts[:1] == (edge_var,)
-                and isinstance(item.right, Ref) and item.right.parts[0] == "prev"):
+        if (isinstance(item.left, Ref) and item.left.parts == (edge_var, "amount")
+                and isinstance(item.right, Ref) and item.right.parts == ("prev", "amount")):
             return AmountConsCond(edge_var, item.tol)
+        # Gap/time consistency (e.g. e.gap ~= prev.gap) stays deferred:
+        # AmountConsCond scores amounts only, and its pruning bound would
+        # not upper-bound the true gap/time score.
         return None
     return None
 
@@ -398,14 +401,18 @@ def _validate_soft(motif: Motif, edge_var: str, doc: Document) -> None:
 
 
 def _window_of(motif: Motif) -> float:
+    bounds: list[float] = []
     for node in checks.walk(motif.where):
         if isinstance(node, Comparison) and node.op in ("<=", "<"):
             if isinstance(node.left, Call) and node.left.name == "span":
                 right = node.right
                 if isinstance(right, Dur):
-                    return right.seconds
+                    bounds.append(right.seconds)
                 if isinstance(right, Num):
-                    return right.value
+                    bounds.append(right.value)
+    if bounds:
+        # Every conjunct must hold, so the tightest bound wins.
+        return min(bounds)
     raise PlanError("E_PLAN", motif.name, "no span bound found after checks passed.",
                     "this is a compiler bug: report it.")
 
@@ -524,6 +531,10 @@ def _group_shape(motif: Motif) -> tuple[str, dict[str, str]]:
                             "use `group by s, d over m` for `(s) -[leg1]-> (m) -[leg2]-> (d)`.")
         if set(keys) == {pat.nodes[0].var, pat.nodes[2].var} and tuple(members) == (pat.nodes[1].var,):
             e1, e2 = pat.edges
+            if e1.max_hops is not None or e2.max_hops is not None:
+                raise PlanError("E_PLAN", motif.name,
+                                "group scatter legs must be single-hop.",
+                                "write `(s) -[leg1]-> (m) -[leg2]-> (d)` without `*m..n`.")
             if e1.direction != "out" or e2.direction != "out":
                 raise PlanError("E_PLAN", motif.name, "scatter legs must point forward.",
                                 "write `(s) -[leg1]-> (m) -[leg2]-> (d)`.")
@@ -555,6 +566,10 @@ def _group_shape(motif: Motif) -> tuple[str, dict[str, str]]:
         if gpat.edges[0].direction != "out" or ppat.edges[0].direction != "out":
             raise PlanError("E_PLAN", motif.name, "gather legs must point forward.",
                             "write `(x) -[g]-> (c), (c) -[p]-> (y)`.")
+        if gpat.edges[0].max_hops is not None or ppat.edges[0].max_hops is not None:
+            raise PlanError("E_PLAN", motif.name,
+                            "group gather legs must be single-hop.",
+                            "write `(x) -[g]-> (c), (c) -[p]-> (y)` without `*m..n`.")
         x_var = gpat.nodes[0].var
         y_var = ppat.nodes[1].var
         return "gather", {"c": c_var, "x": x_var, "y": y_var,
@@ -726,7 +741,7 @@ def _compile_butterfly(doc: Document, motif: Motif, stats=None):
         raise PlanError("E_PLAN", motif.name, "butterfly legs must form a complete 2x2 core.",
                         "write `(x1)->(y1), (x1)->(y2), (x2)->(y1), (x2)->(y2)`.")
     _validate_butterfly_where(motif, x1, x2, y1, y2)
-    _validate_butterfly_soft(motif, (e1, e2, e3, e4), doc)
+    _validate_butterfly_soft(motif, doc)
     window_s = _window_of(motif)
     est = (estimate_group_cost("butterfly", stats, window_s)
            if stats is not None else -1.0)
@@ -770,40 +785,21 @@ def _validate_butterfly_where(motif: Motif, x1: str, x2: str, y1: str, y2: str) 
                         "keep `x1 != x2 and y1 != y2 and span(all) <= 1d`.")
 
 
-def _validate_butterfly_soft(motif: Motif, edge_vars: tuple[str, ...], doc: Document) -> None:
+def _validate_butterfly_soft(motif: Motif, doc: Document) -> None:
     if motif.soft is None:
         return
     term_defs = {t.name: t for t in doc.terms}
-    span_args = set()
-    for node in checks.walk(motif.soft):
-        if isinstance(node, Call) and node.name == "span":
-            span_args.update(id(a) for a in node.args)
-    allowed_heads = set(edge_vars) | {"prev"}
-    for node in checks.walk(motif.soft):
-        if id(node) in span_args:
-            continue
-        if isinstance(node, Ref) and len(node.parts) > 1:
-            head, rest = node.parts[0], node.parts[1:]
-            if head in allowed_heads and len(rest) == 1 and rest[0] in STORED_FIELDS:
-                if head == "prev":
-                    raise PlanError("E_PLAN", motif.name,
-                                    "`prev` needs a path quantifier, which the butterfly has none of.",
-                                    "compare the four edge amounts/times directly.")
-                continue
-            raise PlanError("E_PLAN", motif.name,
-                            f"reference `{'.'.join(node.parts)}` is not a butterfly edge field.",
-                            "use time, amount or gap on e1..e4, or `span(all)`.")
-        elif isinstance(node, Ref) and len(node.parts) == 1:
-            raise PlanError("E_PLAN", motif.name,
-                            f"bare `{node.parts[0]}` has no degree in soft.",
-                            "grade a field or an aggregate instead.")
-        elif isinstance(node, Quantified):
-            raise PlanError("E_PLAN", motif.name,
-                            f"quantifier over `{node.var}` is not carried for the butterfly.",
-                            "the 2x2 core has fixed edges; score them without quantifiers.")
-        elif isinstance(node, IsTerm) and node.term not in ("time_ordered",):
-            try:
-                resolve_term_args(node.term, node.args, term_defs)
-            except ValueError as exc:
-                raise PlanError("E_PLAN", motif.name, str(exc),
-                                "pass literal call-site arguments for now.") from exc
+    soft = motif.soft
+    if (isinstance(soft, IsTerm) and isinstance(soft.base, Call)
+            and soft.base.name == "span" and len(soft.base.args) == 1
+            and isinstance(soft.base.args[0], AllArgs)
+            and soft.term in term_defs and soft.term != "time_ordered"):
+        try:
+            resolve_term_args(soft.term, soft.args, term_defs)
+        except ValueError as exc:
+            raise PlanError("E_PLAN", motif.name, str(exc),
+                            "pass literal call-site arguments for now.") from exc
+        return
+    raise PlanError("E_PLAN", motif.name,
+                    f"soft `{_describe(soft)}` is not carried for the butterfly.",
+                    "score the core with one `span(all) is <term>` condition.")

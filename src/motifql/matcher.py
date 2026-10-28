@@ -168,6 +168,11 @@ def _walk(
     anchor_t = int(graph.times[anchor_pos])
     sender = int(graph.frm[anchor_pos])
     receiver = int(graph.to[anchor_pos])
+    if sender == receiver:
+        # Self-loop anchor: the edge before the anchor already ends where
+        # the anchor starts, so every longer walk repeats the account and
+        # no simple-path witness with min_hops >= 2 exists, open or closed.
+        return False, 0
     window_start = anchor_t - window_s
     expansions = 0
     truncated = False

@@ -266,6 +266,45 @@ class _Checker:
             return "unknown"
         return "unknown"
 
+    def _term_domain(self, tdef, call_args: tuple, scope: dict[str, str]) -> str | None:
+        """The value domain a term grades, or None when it cannot be told.
+
+        Inferred from the definition's argument literals, with parameters
+        bound to the call-site argument units. Pure-number literals (ramp
+        breakpoints, scaling factors like `0.85 * limit`) never set the
+        domain on their own. Ambiguous definitions skip the check rather
+        than risk a false positive.
+        """
+        subst = {formal: self._infer(actual, scope)
+                 for formal, actual in zip(tdef.params, call_args)}
+        domains: set[str] = set()
+        for arg in tdef.args:
+            domains |= self._arg_domains(arg, subst)
+        if _TIME in domains:
+            return None
+        domains.discard(_NUMBER)
+        if len(domains) == 1:
+            return domains.pop()
+        if not domains:
+            return _NUMBER
+        return None
+
+    def _arg_domains(self, node: object, subst: dict[str, str]) -> set[str]:
+        if isinstance(node, Dur):
+            return {_DURATION}
+        if isinstance(node, Money):
+            return {_MONEY}
+        if isinstance(node, (Num, Pct)):
+            return {_NUMBER}
+        if isinstance(node, Ref) and len(node.parts) == 1 and node.parts[0] in subst:
+            unit = subst[node.parts[0]]
+            return {unit} if unit in (_TIME, _MONEY, _DURATION, _NUMBER) else set()
+        if isinstance(node, Comparison) and node.op in ("+", "-", "*", "/"):
+            return self._arg_domains(node.left, subst) | self._arg_domains(node.right, subst)
+        if isinstance(node, Neg):
+            return self._arg_domains(node.body, subst)
+        return set()
+
     def _infer_ref(self, ref: Ref, scope: dict[str, str]) -> str:
         head = ref.parts[0]
         if head == "prev":
@@ -303,6 +342,13 @@ class _Checker:
                 if base in (_ACCOUNT, _BOOL):
                     self.err("E_UNIT", motif, f"`is {node.term}` applies to {base}.",
                              "apply graded terms to numbers, money or durations.")
+                elif base in (_TIME, _MONEY, _DURATION, _NUMBER):
+                    dom = self._term_domain(self.term_defs[node.term], node.args, scope)
+                    if dom is not None and base != dom:
+                        self.err("E_UNIT", motif,
+                                 f"`is {node.term}` applies a {dom} term to {base}.",
+                                 "apply duration terms to gaps and spans, money terms "
+                                 "to amounts, number terms to counts.")
 
     def _check_tol(self, motif: Motif, node: Approx, compared: str) -> None:
         tol = node.tol

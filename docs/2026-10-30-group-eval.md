@@ -149,3 +149,32 @@ report on holdout with background rates attached (protocol from Oct 29).
 Per-anchor score parquets (`eval/results/rq1_{train,holdout}_scores.parquet`,
 gitignored) are saved for exactly that. `stack` stays out (needs
 set-valued variables, LANGUAGE.md §7).
+
+## 6. Correction (Oct 31): critical + high bugfix pass
+
+Rerun after the review-fix pass (1 critical + 8 high; issue #6): the
+self-loop fix removes ~99% of `round_trip` background, the gather
+`p.time > g.time` guard drops pre-collection payouts, and scatter
+pairs older leg1s when the newest is stale. Corrected post-recalibration
+replay, train/day → holdout/day fires:
+
+| motif | train | holdout | recall movement vs §4 |
+|---|---|---|---|
+| round_trip @0.6 | 6,730 → 22.6 | 8,122 → 24.0 | CYCLE 2/3 holds (72 holdout alerts, was ~24K) |
+| layering_chain @0.7 | 3.6 → 3.4 | 17.7 → 16.0 | RANDOM 0/6, unchanged |
+| fan_out @0.5 | 106,167 | 98,858 | unchanged (fix no-op, confirmed) |
+| fan_in @0.5 | 9,507 | 8,778 | unchanged (fix no-op, confirmed) |
+| scatter_gather @0.5 | 1.4 | 0.3 | unchanged on this data (fix pinned by test) |
+| gather_scatter @0.5 | 15,860 → 15,370 | 6,496 → 6,471 | GATHER 0/2 → 1/2 |
+| structuring_fan_in @0.6 | 0 | 0 | unchanged |
+| bipartite_butterfly @0.6 | 594.8 | 687.0 | unchanged (fix no-op, confirmed) |
+
+At emit, holdout completable instances: `round_trip` catches CYCLE 2/3
+plus 8 cross-pattern (STACK/BIPARTITE/FAN-IN×2/GATHER/FAN-OUT/SCATTER/
+RANDOM 1 each); `gather_scatter` catches GATHER 1/2 plus BIPARTITE 1,
+RANDOM 3, FAN-IN 2; `bipartite_butterfly` still BIPARTITE 0/9, FAN-IN
+1/4; `fan_out` still FAN-OUT 0/2 (2 BIPARTITE); `fan_in`, `layering`,
+`scatter`, `structuring` catch nothing. Net for Nov 1: path background
+collapsed (thresholds can come down), gather gained a truth hit, and
+the §3 degeneracy warning now covers `round_trip` too (24 nonzeros/day
+cannot fill a 500/day budget). 75/75 tests pass.

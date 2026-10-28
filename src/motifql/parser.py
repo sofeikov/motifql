@@ -344,8 +344,13 @@ class _ToAST(Transformer):
         patterns = tuple(children[1])
         group = where = having = soft = None
         score, emit = "min", 0.5
+        seen: set[str] = set()
         for clause in children[2:]:
             kind, value = clause
+            if kind in seen:
+                raise ValueError(f"duplicate `{kind}` clause in motif `{name}`: "
+                                 "clauses after `match` may appear at most once each.")
+            seen.add(kind)
             if kind == "group":
                 group = value
             elif kind == "where":

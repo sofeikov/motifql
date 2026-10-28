@@ -109,10 +109,12 @@ def test_scoping_errors() -> None:
 
 def test_unquantified_step_term_rejected() -> None:
     # A bare `e.amount is high` over a path grades no step: E_PLAN at
-    # compile time, not a crash (or silent value) at score time.
+    # compile time, not a crash (or silent value) at score time. The term
+    # is money-domain so the H4 unit check passes and this still pins the
+    # unquantified-IsTerm rejection (not E_CHECK).
     with pytest.raises(PlanError, match="E_PLAN"):
         compile_motif(parse_text(HEADER
-            + "term high = ramp(900, 1000)\n"
+            + "term high = ramp(900 USD, 1000 USD)\n"
             + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
             + " where e is time_ordered and span(e) <= 7d"
             + " soft e.amount is high }"), "t")
@@ -207,6 +209,90 @@ def test_soft_field_must_be_carried() -> None:
             + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
             + " where e is time_ordered and span(e) <= 7d"
             + " soft each e: e.amount_paid ~= prev.amount_paid within 5% }"), "t")
+
+
+def test_gap_consistency_stays_deferred() -> None:
+    # H1: only amount-vs-prev.amount is prunable. Gap/time consistency
+    # must not be miscompiled into AmountConsCond (wrong scores plus an
+    # unsound pruning bound); it stays deferred, where per-step eval
+    # handles the true fields.
+    plan = compile_motif(parse_text(HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.gap ~= prev.gap within 20% }"), "t")
+    assert plan.prunable == ()
+    assert plan.deferred is not None
+
+
+def test_multiple_span_bounds_take_minimum() -> None:
+    # H2: every conjunct must hold, so the tightest bound wins, in
+    # either textual order.
+    for where in ("span(e) <= 7d and span(e) <= 1d",
+                  "span(e) <= 1d and span(e) <= 7d"):
+        plan = compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + f" where e is time_ordered and {where} }}"), "t")
+        assert plan.window_s == 86400
+
+
+def test_duplicate_clauses_rejected() -> None:
+    # H3: clauses after `match` may appear at most once each (LANGUAGE
+    # §4); a repeat must fail loudly instead of silently last-winning.
+    from lark.exceptions import VisitError
+    with pytest.raises(VisitError, match="duplicate `soft`"):
+        parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where span(e) <= 7d"
+            + " soft each e: e.gap is soon"
+            + " soft each e: e.gap is soon }")
+    with pytest.raises(VisitError, match="duplicate `where`"):
+        parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where span(e) <= 7d"
+            + " where span(e) <= 1d }")
+
+
+def test_term_domain_mismatch_rejected() -> None:
+    # H4: LANGUAGE.md §5 item 2 — a duration term on money is E_UNIT.
+    assert "E_UNIT" in _codes(
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d"
+        " soft each e: e.amount is soon }")
+    assert "E_UNIT" in _codes(
+        "term several = ramp(1, 3)\n"
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d"
+        " soft each e: e.amount is several }")
+    # Matching domains still pass: duration term on gap, money term on
+    # amount (parameterised, so the domain comes from the call-site arg).
+    assert _codes(
+        "term high = ramp(900 USD, 1000 USD)\n"
+        "term just_below(limit) = trapezoid(0.85 * limit, 0.95 * limit, 0.999 * limit, limit)\n"
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d"
+        " soft each e: e.gap is soon"
+        " and each e: e.amount is high"
+        " and each e: e.amount is just_below(10000 USD) }") == []
+
+
+def test_group_legs_must_be_single_hop() -> None:
+    # H5: scatter/gather legs accept `*m..n` in the grammar but the plan
+    # has no hop fields and the executor does single-edge lookups, so a
+    # multi-hop leg must E_PLAN like fan and butterfly already do.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (s:account) -[leg1:transfer*1..3]-> (m:account)"
+            + " -[leg2:transfer]-> (d:account)"
+            + " group by s, d over m window 2d"
+            + " where leg2.time > leg1.time and s != d"
+            + " having count(distinct m) >= 2 }"), "t")
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (x:account) -[g:transfer]-> (c:account),"
+            + " (c) -[p:transfer*1..2]-> (y:account)"
+            + " group by c over x, y window 4d"
+            + " where p.time > g.time"
+            + " having count(distinct x) >= 2 and count(distinct y) >= 2 }"), "t")
 
 
 def test_cost_budget_rejects_huge_hops() -> None:
