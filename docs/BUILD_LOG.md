@@ -41,6 +41,9 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
 - PR review triage: the author's 13 threads plus three Codex findings were
   addressed in follow-up commits (visited-set fix, overlap recall, report
   corrections).
+- Post-merge note (Oct 29 branch): replay pool results are realigned to
+  anchor order by position key. This changes no Oct 28 numbers —
+  percentiles and fire-count sums are order-free.
 
 ## Oct 29 — compiler, fuzzy matcher, scored replay
 

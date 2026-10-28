@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 import typer
 
@@ -47,8 +48,10 @@ _PLAN: PathPlan | None = None
 _LIBS = None
 
 
-def _score_job(args: tuple[np.ndarray, bool]
-             ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _score_job(args: tuple[npt.NDArray[np.int64], bool]
+             ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64],
+                        npt.NDArray[bool], npt.NDArray[np.float64],
+                        npt.NDArray[bool]]:
     """Score one anchor shard; returns positions first for realignment."""
     positions, prune = args
     assert _GRAPH is not None and _PLAN is not None and _LIBS is not None
@@ -66,8 +69,9 @@ def _score_job(args: tuple[np.ndarray, bool]
     return positions, top, found, exps, trunc
 
 
-def _replay(positions: np.ndarray, prune: bool, workers: int,
-            label: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _replay(positions: npt.NDArray[np.int64], prune: bool, workers: int,
+            label: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[bool],
+                                 npt.NDArray[np.float64], npt.NDArray[bool]]:
     """Replay shards and realign results to `positions` order (shards finish
     out of order under imap_unordered)."""
     t0 = time.perf_counter()
@@ -96,7 +100,7 @@ def _replay(positions: np.ndarray, prune: bool, workers: int,
     return out
 
 
-def _scatter(vals: np.ndarray, back: np.ndarray, n: int, dt) -> np.ndarray:
+def _scatter(vals: npt.NDArray, back: npt.NDArray[np.int64], n: int, dt) -> npt.NDArray:
     aligned = np.empty(n, dtype=dt)
     aligned[back] = vals
     return aligned
@@ -161,15 +165,21 @@ def main(
         log.info("  %s: threshold for ~500/day = %.3f", name, budget_t)
 
         if unpruned > 0:
-            head = anchor_pos[: min(unpruned, len(anchor_pos))]
-            log.info("[3b/4] replaying %s (unpruned) over %d head anchors", name, len(head))
+            # Uniform random sample, sorted back into time order (the pool
+            # realigns by position, and a head slice would only cover Sep 3).
+            rng = np.random.default_rng(42)
+            sample = np.sort(rng.choice(len(anchor_pos),
+                                        min(unpruned, len(anchor_pos)),
+                                        replace=False))
+            head = anchor_pos[sample]
+            log.info("[3b/4] replaying %s (unpruned) over %d sampled anchors", name, len(head))
             utop, ufound, uexps, _ = _replay(head, False, workers, f"{name} unpruned")
-            agree_found = bool((found[: len(head)] == ufound).all())
-            agree_top = float((np.abs(top[: len(head)] - utop) < 1e-9).mean())
+            agree_found = bool((found[sample] == ufound).all())
+            agree_top = float((np.abs(top[sample] - utop) < 1e-9).mean())
             log.info("  %s: pruned/unpruned expansions %.1f/%.1f (ratio %.1fx), "
                      "found agreement %s, top_score agreement %.4f",
-                     name, exps[: len(head)].mean(), uexps.mean(),
-                     uexps.mean() / max(exps[: len(head)].mean(), 1e-9),
+                     name, exps[sample].mean(), uexps.mean(),
+                     uexps.mean() / max(exps[sample].mean(), 1e-9),
                      agree_found, agree_top)
 
         log.info("[4/4] per-instance top scores on train CYCLE/RANDOM")
@@ -189,9 +199,12 @@ def main(
                 log.info("  %s %d: excluded (%d members < min_hops %d)",
                          ptype, row["instance_id"], len(row["tids"]), plan.min_hops)
                 continue
-            r = score(graph, edge_pos(row["tids"][-1]), plan, libs)
+            pos = edge_pos(row["tids"][-1])
+            r = score(graph, pos, plan, libs)
+            u = score(graph, pos, plan, libs, prune=False)
             n_eval += 1
-            log.info("  %s %d: top_score=%.3f %s", ptype, row["instance_id"], r.top_score,
+            log.info("  %s %d: top_score=%.3f/%.3f (pruned/unpruned) %s",
+                     ptype, row["instance_id"], r.top_score, u.top_score,
                      "FIRES" if r.found else "")
     log.info("done")
 
