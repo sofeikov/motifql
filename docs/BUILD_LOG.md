@@ -108,3 +108,23 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   distinct arithmetic AST node with unit inference, `*1..n` rejection,
   butterfly `continue`, scatter shortcut removal, gather `within 2`,
   truncation-claim corrections (84/84 pass; RQ1 rerun, gather row only).
+
+## Nov 1 — eval-leak fixes (issue #6, E1–E6)
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark),
+from a second review thread with independent repros:
+
+- `eval/evaluate.py`: fixed-budget ranking breaks score ties by a keyed
+  hash of the transfer id (file order correlates with the label).
+- `eval/features.py`: trailing windows count strictly earlier
+  timestamps (same-minute rows are simultaneous); oracle updated with
+  a shuffled order-independence check.
+- `eval/supervised.py`: GBMs train unweighted (18/80 trees, valid AUC
+  0.976/0.942, continuous scores — was 1 tree each).
+- `eval/rq1.py` + `groups.score_any`: RQ1 ranks path motifs unpruned
+  (pruning zeroes every sub-emit top_score).
+- `src/motifql/degrees.py` + `groups.py`: all-skipped `and`/`or` bodies
+  propagate the skip (was 1.0/0.0), both mirrors.
+- `src/motifql/groups.py`: scatter aggregates range over every valid
+  leg edge (was one pair per member).
+- Baselines + RQ1 rerun; Oct 27 §10 and Oct 30 §8 corrections.

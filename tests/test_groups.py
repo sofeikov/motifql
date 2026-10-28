@@ -191,6 +191,24 @@ def test_scatter_fires_with_three_members() -> None:
     assert res.found and res.top_score == pytest.approx(1.0)
 
 
+def test_scatter_aggregates_count_every_valid_leg() -> None:
+    # E6: aggregates range over every edge joining a valid pair, not just
+    # one pair per member. M1 is paid 50 + 50 and forwards 100: the sums
+    # balance exactly (previously the second 50 was dropped and the sum
+    # term scored 0.375, missing emit).
+    g = TemporalGraph.from_transfers(_frame([
+        (10, "001", "S", "002", "M1", 50.0), (15, "001", "S", "002", "M1", 50.0),
+        (20, "001", "S", "002", "M2", 100.0), (25, "001", "S", "002", "M3", 100.0),
+        (30, "001", "S", "002", "M4", 100.0),
+        (40, "002", "M1", "003", "D", 100.0), (45, "002", "M2", "003", "D", 100.0),
+        (50, "002", "M3", "003", "D", 100.0), (55, "002", "M4", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 8, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.found and res.top_score == pytest.approx(0.833333, rel=1e-3)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == list(range(9))
+
+
 def test_gather_witness_matches_brute_force() -> None:
     g = TemporalGraph.from_transfers(_frame([
         (0, "001", "X1", "002", "C", 100.0), (10, "001", "X2", "002", "C", 100.0),
@@ -361,6 +379,17 @@ def test_butterfly_without_soft_scores_one() -> None:
     g = TemporalGraph.from_transfers(_butterfly_frame())
     res = score_butterfly(g, 3, compile_motif(doc, "bf"), libs_from_doc(doc))
     assert res.found and res.score == pytest.approx(1.0)
+
+
+def test_member_skip_propagates_through_operators() -> None:
+    # E5 mirror: an all-skipped member body is skipped (None), not 1.0/0.0.
+    from motifql.groups import _Ctx, _eval_member
+    from motifql.parser import And, Approx, IsTerm, Or, Pct, Ref
+    libs = libs_from_doc(parse_text(HEADER))
+    body = And((IsTerm(Ref(("e", "gap")), False, "soon", ()),
+                Approx(Ref(("e", "amount")), Ref(("e", "amount")), Pct(0.1))))
+    assert _eval_member(body, {}, _Ctx(), libs, "min") is None
+    assert _eval_member(Or(body.items), {}, _Ctx(), libs, "min") is None
 
 
 def test_score_any_dispatches() -> None:

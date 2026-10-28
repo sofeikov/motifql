@@ -7,20 +7,44 @@ transfer and instance granularity.
 
 from __future__ import annotations
 
+import hashlib
+
 import polars as pl
+
+_TIEBREAK_SEED = "motifql-tiebreak-v1"
+
+
+def _tiebreak_key(transfer_ids: list[int]) -> list[int]:
+    """Stable label-blind tie-break column: keyed hash of the transfer id.
+
+    transfer_id is raw file order, which correlates with the label
+    (laundering rows cluster early in the day), so breaking score ties
+    by transfer_id leaks the label into fixed-budget recall. A keyed
+    hash keeps the ranking fully deterministic while carrying no label
+    signal.
+    """
+    return [int(hashlib.md5(f"{_TIEBREAK_SEED}:{t}".encode()).hexdigest()[:16], 16)
+            for t in transfer_ids]
 
 
 def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None) -> pl.DataFrame:
     """Rank transfers 1..N within each day: score desc, then the secondary
-    key desc (breaks the ties that saturate at 1.0), then transfer id asc.
-    Fully deterministic: no input-order dependence anywhere in the key.
+    key desc (breaks the ties that saturate at 1.0), then a keyed hash of
+    the transfer id, then transfer id asc for a total order.
+    Fully deterministic: no input-order dependence anywhere in the key,
+    and no label signal in the tie-break.
     """
-    keys, desc = (["day", "score", "transfer_id"], [False, True, False])
+    keyed = scored.with_columns(
+        pl.Series("_hkey", _tiebreak_key(scored["transfer_id"].to_list()),
+                  dtype=pl.UInt64))
+    keys, desc = (["day", "score", "_hkey", "transfer_id"],
+                  [False, True, False, False])
     if secondary_col is not None:
-        keys, desc = (["day", "score", secondary_col, "transfer_id"],
-                      [False, True, True, False])
-    return scored.sort(keys, descending=desc).with_columns(
-        (pl.int_range(pl.len()).over("day") + 1).alias("rank"))
+        keys, desc = (["day", "score", secondary_col, "_hkey", "transfer_id"],
+                      [False, True, True, False, False])
+    return (keyed.sort(keys, descending=desc)
+            .with_columns((pl.int_range(pl.len()).over("day") + 1).alias("rank"))
+            .drop("_hkey"))
 
 
 def transfer_recall(ranked: pl.DataFrame, budgets: list[int]) -> pl.DataFrame:

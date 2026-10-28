@@ -43,15 +43,15 @@ def _ordered_work_table(df: pl.DataFrame, acct_col: str) -> pl.DataFrame:
 
 
 def trailing_count_sum(df: pl.DataFrame, acct_col: str, prefix: str) -> pl.DataFrame:
-    """Trailing-window count and sum over strictly prior transfers.
+    """Trailing-window count and sum over strictly earlier transfers.
 
     Method, per account: number the rows and prefix-sum the amounts (both
     `.over` the account in time order). The window start of row `i` is the
     first same-account row at or after `ts[i] - w`, found with one forward
-    as-of join per window; count and sum are prefix differences, which
-    restricts them to strictly prior rows inside the window. Exact, including
-    same-timestamp ties: tied rows share `ts`, so every earlier-file-order
-    row with `ts >= cutoff` falls between the window start and row `i`.
+    as-of join per window; count and sum are prefix differences between
+    that start and the first row of `i`'s own `(acct, ts)` block. Same-ts
+    rows are simultaneous, so none of them count each other: the result
+    never depends on file order within a timestamp.
 
     Returns transfer_id plus count/sum for 1h/24h/7d.
     """
@@ -60,9 +60,16 @@ def trailing_count_sum(df: pl.DataFrame, acct_col: str, prefix: str) -> pl.DataF
         (pl.col("amt").cum_sum().over("acct", order_by="pos")
          - pl.col("amt")).alias("psum"),
     )
+    # First row of each (acct, ts) block (`nr` is unique per account, so
+    # exactly one row per block matches): the prefix strictly before it
+    # excludes the whole block, whatever the file order inside.
+    firsts = (w.filter(pl.col("nr") == pl.col("nr").min().over("acct", "ts"))
+              .select("acct", "ts", pl.col("nr").alias("b_nr"),
+                      pl.col("psum").alias("b_psum")))
+    w = w.join(firsts, on=("acct", "ts"), how="left", maintain_order="left")
     out = w.select("transfer_id")
-    mine = w.select("transfer_id", pl.col("nr").alias("my_nr"),
-                    pl.col("psum").alias("my_psum"))
+    mine = w.select("transfer_id", pl.col("b_nr").alias("my_nr"),
+                    pl.col("b_psum").alias("my_psum"))
     right = w.select("acct", pl.col("ts").alias("key"), "nr", "psum").sort("key")
     for name, wus in WINDOWS.items():
         lo = w.select("transfer_id", "acct", (pl.col("ts") - wus).alias("key")).sort("key")
@@ -100,7 +107,8 @@ def _distinct_sweep(ts, peer, w_us, freq, out):
     n_touched = 0
     lo = 0
     distinct = 0
-    for i in range(n):
+    i = 0
+    while i < n:
         cutoff = ts[i] - w_us
         while ts[lo] < cutoff:
             c = peer[lo]
@@ -108,13 +116,20 @@ def _distinct_sweep(ts, peer, w_us, freq, out):
             if freq[c] == 0:
                 distinct -= 1
             lo += 1
-        out[i] = np.float32(distinct)
-        c = peer[i]
-        if freq[c] == 0:
-            distinct += 1
-            touched[n_touched] = c
-            n_touched += 1
-        freq[c] += 1
+        # Emit the whole equal-ts block before adding any of it: same-ts
+        # peers never count each other, in any file order.
+        j = i
+        while j < n and ts[j] == ts[i]:
+            out[j] = np.float32(distinct)
+            j += 1
+        for k in range(i, j):
+            c = peer[k]
+            if freq[c] == 0:
+                distinct += 1
+                touched[n_touched] = c
+                n_touched += 1
+            freq[c] += 1
+        i = j
     for k in range(n_touched):
         freq[touched[k]] = 0
 
