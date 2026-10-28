@@ -234,9 +234,10 @@ HI_SMALL = Path("data/hi-small/transfers.parquet")
 
 @pytest.mark.skipif(not HI_SMALL.exists(), reason="HI-Small parquet not present")
 def test_real_cycle_top_score_matches_unpruned() -> None:
-    # Instance 102's true path gaps (~39h, ~31h) score ~0.21 under `soon`,
-    # below the 0.6 emit: found is False either way, and pruning must not
-    # change the emit-filtered answer.
+    # Instance 102's true path gaps (~39h, ~31h) now score ~0.72 under
+    # `patient` (recalibrated Oct 30 pass 1; was ~0.21 under `soon`), so it
+    # fires at the 0.6 emit. Pruning must not change the emit-filtered
+    # answer either way.
     g = TemporalGraph.from_parquet(HI_SMALL)
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
     plan = compile_motif(doc, "round_trip", stats=g.degree_histogram())
@@ -248,7 +249,7 @@ def test_real_cycle_top_score_matches_unpruned() -> None:
     anchor = int(order[int(np.searchsorted(g.transfer_id[order], last_tid))])
     pruned = score(g, anchor, plan, libs, prune=True)
     raw = score(g, anchor, plan, libs, prune=False)
-    assert not pruned.found and not raw.found
-    assert 0.15 < raw.top_score < 0.25
-    assert pruned.top_score <= raw.top_score
+    assert pruned.found and raw.found
+    assert (pruned.witness, pruned.score) == (raw.witness, raw.score)
+    assert 0.65 < raw.top_score < 0.80
     assert pruned.expansions < raw.expansions

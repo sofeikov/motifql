@@ -5,3 +5,4 @@ __pycache__/
 .env
 eval/results/cache/
 eval/results/*.csv
+eval/results/*.parquet

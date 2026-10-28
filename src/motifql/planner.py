@@ -1,4 +1,4 @@
-"""MotifQL planner: AST to executable path plans (Oct 29, compiler step 4).
+"""MotifQL planner: AST to executable plans (Oct 29 path compiler, Oct 30 groups).
 
 For a single-pattern path motif the plan fixes the anchored backward
 search: hop bounds, the anchor-relative window, and the soft conditions
@@ -9,8 +9,12 @@ final score, so the matcher cuts a branch the moment it drops below the
 emit threshold (LANGUAGE.md section 6). Everything else stays deferred and
 is evaluated once per completed witness.
 
-Group motifs and multi-pattern motifs are rejected with a clean error:
-their execution paths land Oct 30.
+Group motifs (`group by ... over ...`) become a :class:`GroupPlan`: key and
+member roles plus window and thresholds; the executor (``groups.py``) does
+one bounded anchor-touched lookup and evaluates `having`/`soft` once per
+touched group. The 2x2 `bipartite_butterfly` becomes a :class:`ButterflyPlan`:
+a bounded 4-edge join from the anchor. Anything else multi-pattern still
+raises a clean E_PLAN.
 
 Usage:
     from motifql.parser import parse_file
@@ -26,8 +30,8 @@ from dataclasses import dataclass
 from motifql import checks
 from motifql.degrees import STORED_FIELDS, resolve_term_args
 from motifql.parser import (
-    AmountConsCond, And, Approx, Call, Comparison, Document, Dur, GapTermCond,
-    IsTerm, Money, Motif, Num, Pct, Quantified, Ref,
+    AllArgs, AmountConsCond, And, Approx, Call, Comparison, DistinctArg, Document, Dur,
+    GapTermCond, IsTerm, Money, Motif, Num, Pct, Quantified, Ref,
 )
 
 log = logging.getLogger("planner")
@@ -72,6 +76,57 @@ class PathPlan:
     window_s: float
     prunable: tuple[PrunableGroup, ...]
     deferred: object | None  # soft AST evaluated on completion (None = all pruned)
+    score_tnorm: str
+    emit: float
+    est_expansions: float
+
+
+@dataclass(frozen=True)
+class GroupPlan:
+    """Executable plan for one group motif (Oct 30).
+
+    `kind` is one of "fan" (single-edge fan_out/fan_in/structuring),
+    "scatter" (s -> m -> d chain) or "gather" (x -> c, c -> y pair).
+    `roles` maps role names to variable names, e.g. fan:
+    {"key": "s", "member": "r", "edge": "e", "dir": "out"};
+    scatter: {"s":..,"m":..,"d":..,"leg1":..,"leg2":..};
+    gather: {"c":..,"x":..,"y":..,"g":..,"p":..}.
+    `having`/`soft`/`where` carry the ASTs; the executor in groups.py
+    evaluates the v0-covered shapes and the planner rejects the rest.
+    """
+
+    name: str
+    kind: str
+    roles: tuple  # tuple[(role, var), ...]
+    keys: tuple[str, ...]
+    members: tuple[str, ...]
+    window_s: float
+    having: object | None
+    soft: object | None
+    where: object | None
+    score_tnorm: str
+    emit: float
+    est_expansions: float
+
+    def role(self, name: str) -> str:
+        """Variable name for a role (KeyError when the kind lacks it)."""
+        return dict(self.roles)[name]
+
+
+@dataclass(frozen=True)
+class ButterflyPlan:
+    """Executable plan for the 2x2 bipartite core (Oct 30).
+
+    Four single-edge patterns covering every (xi, yj) combo; the anchor is
+    whichever edge arrives, the other three are looked up within the window.
+    """
+
+    name: str
+    edge_vars: tuple[str, ...]  # (e1, e2, e3, e4)
+    senders: tuple[str, str]  # (x1, x2)
+    receivers: tuple[str, str]  # (y1, y2)
+    window_s: float
+    soft: object | None
     score_tnorm: str
     emit: float
     est_expansions: float
@@ -170,7 +225,7 @@ def _as_step_atom(item: object, edge_var: str):
 
 # -- entry point -----------------------------------------------------------
 
-def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
+def compile_motif(doc: Document, name: str, stats=None):
     """Check, then plan one motif. Raises CheckError-list or PlanError."""
     motif = next((m for m in doc.motifs if m.name == name), None)
     if motif is None:
@@ -183,12 +238,9 @@ def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
                         "; ".join(e.message() for e in by_motif[:3]),
                         "fix the static errors first.")
     if motif.group is not None:
-        raise PlanError("E_PLAN", name, "group motifs execute Oct 30.",
-                        "use a single-pattern path motif for now.")
+        return _compile_group(doc, motif, stats)
     if len(motif.patterns) != 1:
-        raise PlanError("E_PLAN", name,
-                        f"{len(motif.patterns)} match patterns: only single-pattern path motifs execute yet.",
-                        "use one `(a) -[e*..]-> (b)` pattern; multi-pattern matching lands Oct 30.")
+        return _compile_butterfly(doc, motif, stats)
     (pat,) = motif.patterns
     if len(pat.edges) != 1 or pat.edges[0].max_hops is None:
         raise PlanError("E_PLAN", name, "the single edge must be variable-length `*m..n`.",
@@ -339,3 +391,379 @@ def estimate_cost(max_hops: int, stats, fanout: int = 1_000) -> float:
     mean_deg = (np.arange(len(hist)) * hist).sum() / total / 2.0
     branch = min(mean_deg, fanout)
     return float(sum(branch ** i for i in range(1, max_hops + 1)))
+
+
+def _mean_branch(stats, fanout: int = 1_000) -> float:
+    """Mean in-degree (≈ total/2) capped by the fanout cap; -1 when no stats."""
+    if stats is None:
+        return -1.0
+    import numpy as np
+
+    hist = np.asarray(stats, dtype=np.float64)
+    total = hist.sum()
+    if total == 0:
+        return 0.0
+    mean_deg = float((np.arange(len(hist)) * hist).sum() / total / 2.0)
+    return min(mean_deg, fanout)
+
+
+def estimate_group_cost(kind: str, stats, window_s: float, fanout: int = 1_000) -> float:
+    """Cost sanity bound for group/butterfly plans (Oct 30).
+
+    Fan motifs touch one windowed adjacency list; scatter/gather touch two
+    levels; the butterfly touches up to four. All scale with the window, so
+    the bound multiplies the branching factor by window days. Reference
+    motifs estimate in the tens, far below the 10M path budget.
+    """
+    branch = _mean_branch(stats, fanout)
+    if branch < 0:
+        return -1.0
+    window_days = max(window_s / 86400.0, 1 / 24)
+    if kind == "fan":
+        return branch * window_days
+    if kind in ("scatter", "gather"):
+        return branch * branch * window_days
+    if kind == "butterfly":
+        return branch ** 4 * window_days
+    return branch * window_days
+
+
+# -- group + butterfly compilation (Oct 30) --------------------------------
+
+def _compile_group(doc: Document, motif: Motif, stats=None):
+    """Plan one `group by ... over ...` motif; E_PLAN outside v0 coverage."""
+    group = motif.group
+    assert group is not None
+    if group.window_s is None:
+        raise PlanError("E_PLAN", motif.name, "group needs a `window D`.",
+                        "write `group by k over m window 1d`.")
+    if motif.score not in ("min", "product"):
+        raise PlanError("E_PLAN", motif.name, f"unknown score `{motif.score}`.",
+                        "use `score min` or `score product`.")
+    kind, roles = _group_shape(motif)
+    _validate_group_where(motif, kind, roles)
+    _validate_group_having(motif, kind, roles)
+    _validate_group_soft(motif, kind, roles, doc)
+    est = (estimate_group_cost(kind, stats, group.window_s)
+           if stats is not None else -1.0)
+    if stats is not None and est > DEFAULT_COST_BUDGET:
+        raise PlanError("E_COST", motif.name,
+                        f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
+                        "tighten the group window.")
+    return GroupPlan(motif.name, kind, tuple(roles.items()), motif.group.keys,
+                     motif.group.members, group.window_s, motif.having,
+                     motif.soft, motif.where, motif.score, motif.emit, est)
+
+
+def _group_shape(motif: Motif) -> tuple[str, dict[str, str]]:
+    """Infer the group kind and role vars from pattern + group clause."""
+    pats = motif.patterns
+    keys = motif.group.keys
+    members = motif.group.members
+    if len(pats) == 1 and len(pats[0].edges) == 1:
+        (pat,) = pats
+        edge = pat.edges[0]
+        if edge.max_hops is not None:
+            raise PlanError("E_PLAN", motif.name,
+                            "group fan edges must be single-hop.",
+                            "write `-[e:transfer]->` without `*m..n`.")
+        if edge.direction == "in":
+            raise PlanError("E_PLAN", motif.name,
+                            "in-edges (`<-[e]-`) are not carried yet.",
+                            "reverse the arrow so it points away from the anchor side.")
+        s_var, r_var = pat.nodes[0].var, pat.nodes[1].var
+        if set(keys) == {s_var} and tuple(members) == (r_var,):
+            return "fan", {"key": s_var, "member": r_var, "edge": edge.var,
+                           "dir": "out-key-sender"}
+        if set(keys) == {r_var} and tuple(members) == (s_var,):
+            return "fan", {"key": r_var, "member": s_var, "edge": edge.var,
+                           "dir": "out-key-receiver"}
+        raise PlanError("E_PLAN", motif.name,
+                        f"single-edge group must key on one end and range over the other, got keys={keys} members={members}.",
+                        "use `group by s over r` or `group by r over s` for `(s) -[e]-> (r)`.")
+    if len(pats) == 1 and len(pats[0].edges) == 2:
+        (pat,) = pats
+        if {n.var for n in pat.nodes} != set(keys) | set(members):
+            raise PlanError("E_PLAN", motif.name, "scatter roles do not cover the pattern.",
+                            "use `group by s, d over m` for `(s) -[leg1]-> (m) -[leg2]-> (d)`.")
+        if set(keys) == {pat.nodes[0].var, pat.nodes[2].var} and tuple(members) == (pat.nodes[1].var,):
+            e1, e2 = pat.edges
+            if e1.direction != "out" or e2.direction != "out":
+                raise PlanError("E_PLAN", motif.name, "scatter legs must point forward.",
+                                "write `(s) -[leg1]-> (m) -[leg2]-> (d)`.")
+            s_var, m_var, d_var = (n.var for n in pat.nodes)
+            return "scatter", {"s": s_var, "m": m_var, "d": d_var,
+                               "leg1": e1.var, "leg2": e2.var}
+        raise PlanError("E_PLAN", motif.name, "two-leg groups must key on the ends and range over the middle.",
+                        "use `group by s, d over m` for the chain pattern.")
+    if len(pats) == 2 and all(len(p.edges) == 1 for p in pats):
+        shared = {n.var for n in pats[0].nodes} & {n.var for n in pats[1].nodes}
+        if len(shared) != 1:
+            raise PlanError("E_PLAN", motif.name, "gather patterns must share exactly one account.",
+                            "write `(x) -[g]-> (c), (c) -[p]-> (y)` sharing `c`.")
+        (c_var,) = shared
+        if tuple(keys) != (c_var,) or set(members) != (
+                ({n.var for n in pats[0].nodes} | {n.var for n in pats[1].nodes}) - {c_var}):
+            raise PlanError("E_PLAN", motif.name, "gather must `group by c over x, y` around the shared account.",
+                            "key on the shared account, range over the two ends.")
+        # The pattern whose receiver is c is the gather leg.
+        try:
+            gpat = next(p for p in pats if p.nodes[1].var == c_var)
+            ppat = next(p for p in pats if p.nodes[0].var == c_var)
+        except StopIteration:
+            raise PlanError("E_PLAN", motif.name, "gather legs must meet at the shared account.",
+                            "write `(x) -[g]-> (c), (c) -[p]-> (y)`.")
+        if gpat is ppat:
+            raise PlanError("E_PLAN", motif.name, "gather legs must meet at the shared account.",
+                            "write `(x) -[g]-> (c), (c) -[p]-> (y)`.")
+        if gpat.edges[0].direction != "out" or ppat.edges[0].direction != "out":
+            raise PlanError("E_PLAN", motif.name, "gather legs must point forward.",
+                            "write `(x) -[g]-> (c), (c) -[p]-> (y)`.")
+        x_var = gpat.nodes[0].var
+        y_var = ppat.nodes[1].var
+        return "gather", {"c": c_var, "x": x_var, "y": y_var,
+                          "g": gpat.edges[0].var, "p": ppat.edges[0].var}
+    raise PlanError("E_PLAN", motif.name,
+                    f"{len(pats)} patterns with {[len(p.edges) for p in pats]} edges: not a v0 group shape.",
+                    "use a single-edge fan, an s->m->d chain, or an x->c/c->y pair.")
+
+
+def _validate_group_where(motif: Motif, kind: str, roles: dict[str, str]) -> None:
+    """Only the structural where-forms the executor carries."""
+    if motif.where is None:
+        if kind == "fan":
+            return
+        raise PlanError("E_PLAN", motif.name, f"{kind} needs its ordering/identity guard in `where`.",
+                        "keep `leg2.time > leg1.time and s != d` (scatter) or `p.time > g.time` (gather).")
+    if kind == "fan":
+        raise PlanError("E_PLAN", motif.name,
+                        f"hard predicate `{_describe(motif.where)}` is not carried for fan groups.",
+                        "drop `where` on single-edge groups; `having` already gates them.")
+    ok_order = ok_ident = False
+    if kind == "scatter":
+        want_gt = (roles["leg2"], "time", roles["leg1"], "time")
+        want_neq = {roles["s"], roles["d"]}
+    elif kind == "gather":
+        want_gt = (roles["p"], "time", roles["g"], "time")
+        want_neq = set()
+    else:
+        raise PlanError("E_PLAN", motif.name, f"unknown group kind `{kind}`.",
+                        "use fan, scatter or gather shapes.")
+    for conjunct in _split_conjuncts(motif.where):
+        if (isinstance(conjunct, Comparison) and conjunct.op == ">"
+                and isinstance(conjunct.left, Ref) and isinstance(conjunct.right, Ref)
+                and tuple(conjunct.left.parts) == (want_gt[0], want_gt[1])
+                and tuple(conjunct.right.parts) == (want_gt[2], want_gt[3])):
+            ok_order = True
+            continue
+        if (kind == "scatter" and isinstance(conjunct, Comparison) and conjunct.op == "!="
+                and isinstance(conjunct.left, Ref) and isinstance(conjunct.right, Ref)
+                and len(conjunct.left.parts) == 1 and len(conjunct.right.parts) == 1
+                and {conjunct.left.parts[0], conjunct.right.parts[0]} == want_neq):
+            ok_ident = True
+            continue
+        raise PlanError("E_PLAN", motif.name,
+                        f"hard predicate `{_describe(conjunct)}` is not carried for {kind} groups.",
+                        "keep only the time ordering and end-node identity guards.")
+    if not ok_order or (kind == "scatter" and not ok_ident):
+        raise PlanError("E_PLAN", motif.name, f"{kind} `where` must carry the ordering guard.",
+                        "keep `leg2.time > leg1.time` (scatter) or `p.time > g.time` (gather).")
+
+
+def _validate_group_having(motif: Motif, kind: str, roles: dict[str, str]) -> None:
+    """Having must be count-distinct thresholds over member vars."""
+    if motif.having is None:
+        raise PlanError("E_PLAN", motif.name, "group motifs need `having` count gates.",
+                        "add e.g. `having count(distinct r) >= 2`.")
+    members = set(motif.group.members)
+    for conjunct in _split_conjuncts(motif.having):
+        if not (isinstance(conjunct, Comparison) and conjunct.op in (">=", ">")
+                and isinstance(conjunct.left, Call) and conjunct.left.name == "count"
+                and len(conjunct.left.args) == 1
+                and isinstance(conjunct.left.args[0], DistinctArg)
+                and isinstance(conjunct.left.args[0].ref, Ref)
+                and len(conjunct.left.args[0].ref.parts) == 1
+                and conjunct.left.args[0].ref.parts[0] in members
+                and isinstance(conjunct.right, Num)):
+            raise PlanError("E_PLAN", motif.name,
+                            f"`{_describe(conjunct)}` is not a member-count gate.",
+                            "use `count(distinct <member>) >= N` conjuncts in `having`.")
+    # All conjuncts passed the shape above (the raise fires on mismatch).
+
+
+def _validate_group_soft(motif: Motif, kind: str, roles: dict[str, str], doc: Document) -> None:
+    """Soft must use only the v0-covered group forms (aggregates + members)."""
+    if motif.soft is None:
+        return
+    edge_vars = {r for k, r in roles.items() if k in ("edge", "leg1", "leg2", "g", "p")}
+    member_vars = set(motif.group.members)
+    term_defs = {t.name: t for t in doc.terms}
+    span_args = set()
+    for node in checks.walk(motif.soft):
+        if isinstance(node, Call) and node.name == "span":
+            span_args.update(id(a) for a in node.args)
+    for node in checks.walk(motif.soft):
+        if id(node) in span_args:
+            continue
+        if isinstance(node, Ref):
+            if len(node.parts) == 1:
+                if node.parts[0] in member_vars or node.parts[0] in edge_vars:
+                    continue
+                raise PlanError("E_PLAN", motif.name,
+                                f"bare `{node.parts[0]}` has no degree in soft.",
+                                "grade a field (`e.amount`) or an aggregate (`count(...)`).")
+            head, rest = node.parts[0], node.parts[1:]
+            if head == "prev":
+                raise PlanError("E_PLAN", motif.name,
+                                "`prev` needs a path quantifier, which groups have none of.",
+                                "compare the group's edge amounts/times directly.")
+            if head in edge_vars and len(rest) == 1 and rest[0] in STORED_FIELDS:
+                continue
+            if head in ("avg", "sum", "min", "max") or head in member_vars:
+                # `avg(e.amount)`-style call args surface as Refs under Call;
+                # memberVAR-scoped refs are checked at the Quantified level.
+                continue
+            raise PlanError("E_PLAN", motif.name,
+                            f"reference `{'.'.join(node.parts)}` is not a group field.",
+                            "use the group edge/member amount, time or gap fields.")
+        elif isinstance(node, Quantified):
+            if node.var not in member_vars:
+                raise PlanError("E_PLAN", motif.name,
+                                f"quantifier over `{node.var}`, which is not a group member.",
+                                f"quantify over one of {sorted(member_vars)}.")
+        elif isinstance(node, Call):
+            if node.name in ("count", "sum", "avg", "min", "max", "span"):
+                continue
+            raise PlanError("E_PLAN", motif.name,
+                            f"function `{node.name}` is not a group aggregate.",
+                            "use count, sum, avg, min, max or span.")
+        elif isinstance(node, IsTerm) and node.term not in ("time_ordered",):
+            try:
+                resolve_term_args(node.term, node.args, term_defs)
+            except ValueError as exc:
+                raise PlanError("E_PLAN", motif.name, str(exc),
+                                "pass literal call-site arguments for now.") from exc
+
+
+def _compile_butterfly(doc: Document, motif: Motif, stats=None):
+    """Plan the 2x2 bipartite core; anything else multi-pattern is E_PLAN."""
+    if len(motif.patterns) != 4 or any(len(p.edges) != 1 or len(p.nodes) != 2 for p in motif.patterns):
+        raise PlanError("E_PLAN", motif.name,
+                        f"{len(motif.patterns)} match patterns: only the 2x2 butterfly is covered.",
+                        "write four single-edge patterns `(x1)->(y1), (x1)->(y2), (x2)->(y1), (x2)->(y2)`.")
+    if motif.group is not None:
+        raise PlanError("E_PLAN", motif.name, "the butterfly takes no `group` clause.",
+                        "drop the group clause; the 2x2 core is already bounded.")
+    senders: dict[str, list[str]] = {}
+    receivers: dict[str, list[str]] = {}
+    edge_of: dict[tuple[str, str], str] = {}
+    for pat in motif.patterns:
+        (edge,) = pat.edges
+        if edge.max_hops is not None:
+            raise PlanError("E_PLAN", motif.name, "butterfly edges must be single-hop.",
+                            "write `-[e:transfer]->` without `*m..n`.")
+        if edge.direction == "in":
+            raise PlanError("E_PLAN", motif.name, "butterfly in-edges are not carried.",
+                            "point every edge forward `(x) -[e]-> (y)`.")
+        s_var, r_var = pat.nodes[0].var, pat.nodes[1].var
+        senders.setdefault(s_var, []).append(r_var)
+        receivers.setdefault(r_var, []).append(s_var)
+        if (s_var, r_var) in edge_of:
+            raise PlanError("E_PLAN", motif.name,
+                            f"duplicate butterfly leg ({s_var})->({r_var}).",
+                            "cover each (xi, yj) combo exactly once.")
+        edge_of[(s_var, r_var)] = edge.var
+    if set(senders) != set(receivers) and len(senders) == 2 and len(receivers) == 2:
+        pass
+    xs = sorted(senders)
+    ys = sorted(receivers)
+    if (len(xs) != 2 or len(ys) != 2 or any(sorted(v) != ys for v in senders.values())
+            or any(sorted(v) != xs for v in receivers.values())):
+        raise PlanError("E_PLAN", motif.name, "butterfly legs must form a complete 2x2 core.",
+                        "write `(x1)->(y1), (x1)->(y2), (x2)->(y1), (x2)->(y2)`.")
+    x1, x2 = xs
+    y1, y2 = ys
+    try:
+        e1, e2, e3, e4 = (edge_of[(x1, y1)], edge_of[(x1, y2)],
+                          edge_of[(x2, y1)], edge_of[(x2, y2)])
+    except KeyError:
+        raise PlanError("E_PLAN", motif.name, "butterfly legs must form a complete 2x2 core.",
+                        "write `(x1)->(y1), (x1)->(y2), (x2)->(y1), (x2)->(y2)`.")
+    _validate_butterfly_where(motif, x1, x2, y1, y2)
+    _validate_butterfly_soft(motif, (e1, e2, e3, e4), doc)
+    window_s = _window_of(motif)
+    est = (estimate_group_cost("butterfly", stats, window_s)
+           if stats is not None else -1.0)
+    if stats is not None and est > DEFAULT_COST_BUDGET:
+        raise PlanError("E_COST", motif.name,
+                        f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
+                        "tighten the `span(all)` window.")
+    return ButterflyPlan(motif.name, (e1, e2, e3, e4), (x1, x2), (y1, y2),
+                         window_s, motif.soft, motif.score, motif.emit, est)
+
+
+def _validate_butterfly_where(motif: Motif, x1: str, x2: str, y1: str, y2: str) -> None:
+    if motif.where is None:
+        raise PlanError("E_PLAN", motif.name, "the butterfly needs its guards in `where`.",
+                        "keep `x1 != x2 and y1 != y2 and span(all) <= 1d`.")
+    need_neq = [{x1, x2}, {y1, y2}]
+    seen_neq: list[set] = []
+    seen_span = False
+    for conjunct in _split_conjuncts(motif.where):
+        if (isinstance(conjunct, Comparison) and conjunct.op == "!="
+                and isinstance(conjunct.left, Ref) and isinstance(conjunct.right, Ref)
+                and len(conjunct.left.parts) == 1 and len(conjunct.right.parts) == 1):
+            pair = {conjunct.left.parts[0], conjunct.right.parts[0]}
+            if pair in need_neq:
+                seen_neq.append(pair)
+                continue
+        elif (isinstance(conjunct, Comparison) and conjunct.op in ("<=", "<")
+                and isinstance(conjunct.left, Call) and conjunct.left.name == "span"
+                and isinstance(conjunct.right, (Dur, Num))):
+            seen_span = True
+            continue
+        raise PlanError("E_PLAN", motif.name,
+                        f"hard predicate `{_describe(conjunct)}` is not carried for the butterfly.",
+                        "keep only `x1 != x2`, `y1 != y2` and the `span(all)` bound.")
+    if sorted(map(sorted, seen_neq)) != sorted(map(sorted, need_neq)) or not seen_span:
+        raise PlanError("E_PLAN", motif.name, "the butterfly `where` must guard identities and span.",
+                        "keep `x1 != x2 and y1 != y2 and span(all) <= 1d`.")
+
+
+def _validate_butterfly_soft(motif: Motif, edge_vars: tuple[str, ...], doc: Document) -> None:
+    if motif.soft is None:
+        return
+    term_defs = {t.name: t for t in doc.terms}
+    span_args = set()
+    for node in checks.walk(motif.soft):
+        if isinstance(node, Call) and node.name == "span":
+            span_args.update(id(a) for a in node.args)
+    allowed_heads = set(edge_vars) | {"prev"}
+    for node in checks.walk(motif.soft):
+        if id(node) in span_args:
+            continue
+        if isinstance(node, Ref) and len(node.parts) > 1:
+            head, rest = node.parts[0], node.parts[1:]
+            if head in allowed_heads and len(rest) == 1 and rest[0] in STORED_FIELDS:
+                if head == "prev":
+                    raise PlanError("E_PLAN", motif.name,
+                                    "`prev` needs a path quantifier, which the butterfly has none of.",
+                                    "compare the four edge amounts/times directly.")
+                continue
+            raise PlanError("E_PLAN", motif.name,
+                            f"reference `{'.'.join(node.parts)}` is not a butterfly edge field.",
+                            "use time, amount or gap on e1..e4, or `span(all)`.")
+        elif isinstance(node, Ref) and len(node.parts) == 1:
+            raise PlanError("E_PLAN", motif.name,
+                            f"bare `{node.parts[0]}` has no degree in soft.",
+                            "grade a field or an aggregate instead.")
+        elif isinstance(node, Quantified):
+            raise PlanError("E_PLAN", motif.name,
+                            f"quantifier over `{node.var}` is not carried for the butterfly.",
+                            "the 2x2 core has fixed edges; score them without quantifiers.")
+        elif isinstance(node, IsTerm) and node.term not in ("time_ordered",):
+            try:
+                resolve_term_args(node.term, node.args, term_defs)
+            except ValueError as exc:
+                raise PlanError("E_PLAN", motif.name, str(exc),
+                                "pass literal call-site arguments for now.") from exc

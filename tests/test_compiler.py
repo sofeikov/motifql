@@ -31,7 +31,7 @@ def test_reference_file_parses_and_passes() -> None:
     assert len(doc.motifs) == 8
     assert checks.check_document(doc) == []
     rt = next(m for m in doc.motifs if m.name == "round_trip")
-    assert rt.line == 26
+    assert rt.line == 29  # shifts when shared vocabulary above gains lines
     (pat,) = rt.patterns
     assert [n.var for n in pat.nodes] == ["a", "a"]
     (edge,) = pat.edges
@@ -42,8 +42,8 @@ def test_reference_file_parses_and_passes() -> None:
 def test_group_windows_parse() -> None:
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
     by_name = {m.name: m for m in doc.motifs}
-    assert by_name["fan_out"].group.window_s == 86400.0
-    assert by_name["scatter_gather"].group.window_s == 21600.0
+    assert by_name["fan_out"].group.window_s == 4 * 86400.0
+    assert by_name["scatter_gather"].group.window_s == 48 * 3600.0
     assert by_name["scatter_gather"].group.keys == ("s", "d")
 
 
@@ -122,7 +122,7 @@ def test_round_trip_plan() -> None:
     assert plan.closed and (plan.min_hops, plan.max_hops) == (2, 5)
     assert plan.window_s == 7 * 86400
     assert [g.label for g in plan.prunable] == [
-        "each e: gap is soon",
+        "each e: gap is patient",
         "each e: amount ~= prev.amount within 20%",
     ]
     assert plan.deferred is None
@@ -136,11 +136,15 @@ def test_layering_chain_plan_is_open() -> None:
     assert len(plan.prunable) == 2
 
 
-def test_group_and_multipattern_rejected() -> None:
-    with pytest.raises(PlanError):
-        compile_motif(_doc(), "fan_out")
-    with pytest.raises(PlanError):
-        compile_motif(_doc(), "bipartite_butterfly")
+def test_group_and_butterfly_now_plan() -> None:
+    # Oct 30: group motifs and the 2x2 core compile; other shapes still E_PLAN.
+    from motifql.planner import ButterflyPlan, GroupPlan
+    assert isinstance(compile_motif(_doc(), "fan_out"), GroupPlan)
+    assert isinstance(compile_motif(_doc(), "bipartite_butterfly"), ButterflyPlan)
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER + "motif t { match (a:account) -[e:transfer*2..5]-> (a),"
+                                 " (b:account) -[f:transfer]-> (c:account)"
+                                 " where span(all) <= 1d }"), "t")
 
 
 def test_where_only_carries_what_the_walk_does() -> None:
