@@ -161,6 +161,69 @@ def test_some_omits_the_undefined_first_step() -> None:
     assert res.top_score == 0.0
 
 
+def test_prev_gap_reads_the_previous_step_gap() -> None:
+    # Review repro: 3-step cycle with gaps 1h then 9h, `each e: e.gap is
+    # soon and e.gap < prev.gap`. Step 3 reads prev.gap = 1h against its
+    # own 9h, so the comparison is 0 and the witness scores 0 — the step
+    # used to be skipped outright (prev.gap was always undefined),
+    # leaving the vacuous 1.0.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: (e.gap is soon and e.gap < prev.gap)"
+        + " score min emit when score >= 0.1 }")
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (60, "002", "B", "003", "C", 100.0),
+                (600, "003", "C", "001", "A", 100.0),
+            ]
+        )
+    )
+    res = score(g, 2, plan, libs)
+    assert res.top_score == 0.0
+    # Reversed gaps (9h then 1h): step 3 reads prev.gap = 9h, 1h < 9h
+    # holds, and `soon` gives 0.93 on the 9h gap, 1.0 on the 1h gap.
+    g2 = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (540, "002", "B", "003", "C", 100.0),
+                (600, "003", "C", "001", "A", 100.0),
+            ]
+        )
+    )
+    res2 = score(g2, 2, plan, libs)
+    assert res2.found and res2.score == pytest.approx((172800 - 32400) / 151200)
+
+
+def test_unquantified_span_term_scores() -> None:
+    # `soft span(e) is soon` grades the whole witness, no quantifier
+    # needed. This used to crash the evaluator (missing tnorm argument).
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft span(e) is soon"
+        + " score min emit when score >= 0.1 }")
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (20, "002", "B", "001", "A", 100.0),
+            ]
+        )
+    )
+    res = score(g, 1, plan, libs)
+    assert res.found and res.score == pytest.approx(1.0)
+
+
 def test_named_quantifier_evaluates() -> None:
     doc = parse_text(
         HEADER
@@ -234,9 +297,10 @@ HI_SMALL = Path("data/hi-small/transfers.parquet")
 
 @pytest.mark.skipif(not HI_SMALL.exists(), reason="HI-Small parquet not present")
 def test_real_cycle_top_score_matches_unpruned() -> None:
-    # Instance 102's true path gaps (~39h, ~31h) score ~0.21 under `soon`,
-    # below the 0.6 emit: found is False either way, and pruning must not
-    # change the emit-filtered answer.
+    # Instance 102's true path gaps (~39h, ~31h) now score ~0.72 under
+    # `patient` (recalibrated Oct 30 pass 1; was ~0.21 under `soon`), so it
+    # fires at the 0.6 emit. Pruning must not change the emit-filtered
+    # answer either way.
     g = TemporalGraph.from_parquet(HI_SMALL)
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
     plan = compile_motif(doc, "round_trip", stats=g.degree_histogram())
@@ -248,7 +312,7 @@ def test_real_cycle_top_score_matches_unpruned() -> None:
     anchor = int(order[int(np.searchsorted(g.transfer_id[order], last_tid))])
     pruned = score(g, anchor, plan, libs, prune=True)
     raw = score(g, anchor, plan, libs, prune=False)
-    assert not pruned.found and not raw.found
-    assert 0.15 < raw.top_score < 0.25
-    assert pruned.top_score <= raw.top_score
+    assert pruned.found and raw.found
+    assert (pruned.witness, pruned.score) == (raw.witness, raw.score)
+    assert 0.65 < raw.top_score < 0.80
     assert pruned.expansions < raw.expansions

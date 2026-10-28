@@ -70,11 +70,13 @@ branches die on scores long before hitting expansion caps. Found-agreement
 pruned-vs-unpruned is exact; top scores agree on 99.0–99.95% (differences
 are sub-emit only, by construction).
 
-Score distribution, unpruned: ~2% of anchors score above 0, ~1% land in
-(0, 0.6) with a median non-zero score around 0.6 — so sub-emit ranking is
-real but costs the full unpruned search. The pruned replay's empty
-(0, 0.6) band is a measurement artifact of pruning against emit, not
-evidence that partial degrees do not exist.
+Score distribution, unpruned: ~1–2% of anchors score above 0, under 1%
+land in (0, 0.6) with a median non-zero score around 0.58 — so sub-emit
+ranking is real but costs the full unpruned search. (An independent
+review sample, seed 11 over 60k anchors, found 1.35% / 0.72% / 0.578:
+same shape.) The pruned replay's empty (0, 0.6) band is a measurement
+artifact of pruning against emit, not evidence that partial degrees do
+not exist.
 
 ## 4. RQ1 reading (honest version)
 
@@ -95,11 +97,13 @@ threshold) next to its recall, so a tuned-up number cannot hide a blown-up
 budget.
 
 A note on RQ2 (exact vs fuzzy): the fair comparison is at equal alert
-budgets, where a 6-day/8%-tolerant exact `round_trip` (the most permissive
-heap that keeps every train CYCLE reachable) is the baseline to beat — the
-current 7-day exact row over-fires by allowing the slowest member of every
-family, and the current fuzzy row under-fires on untuned breakpoints.
-Neither published number is the comparison; the tuned pair is Nov 1 work.
+budgets. The baseline to beat is a 6-day/8%-tolerant exact `round_trip` —
+the most permissive bound that keeps every train CYCLE reachable, tuned on
+train to the same alerts/day as the fuzzy motif — not the current 7-day
+exact row, which over-fires by allowing the slowest member of every
+family (and not the current fuzzy row either, which under-fires on
+untuned breakpoints). Neither published number is the comparison; the
+tuned pair is Nov 1 work.
 The engine contribution stands regardless: ranking exists (142/159
 separate from background; 102's 0.21 beats 99% of anchors at 0), while
 exact matching only counts.

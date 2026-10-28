@@ -172,8 +172,12 @@ def _eval_quant(node: Quantified, steps: list[int], graph, libs, tnorm: str) -> 
     for i in range(len(steps)):
         vals = {"time": float(times[i]), "amount": amounts[i],
                 "gap": float(times[i] - times[i - 1]) if i > 0 else None}
+        # The previous gap is the gap *of the previous step*, which is
+        # defined only from the third witness step on (the first step has
+        # no gap at all). Reads of a genuinely undefined prev.gap skip
+        # the step, per the agreed prev semantics.
         pvals = {"time": float(times[i - 1]), "amount": amounts[i - 1],
-                 "gap": None} if i > 0 else None
+                 "gap": float(times[i - 1] - times[i - 2]) if i > 1 else None} if i > 0 else None
         d = _eval_step(node.body, vals, pvals, libs, tnorm)
         if d is None:
             continue  # undefined prev/gap on this step: omit the binding
@@ -261,7 +265,7 @@ def _resolve_arith(node: object, vals: dict, pvals: dict | None) -> float | None
     raise ValueError(f"cannot evaluate arithmetic per step: {node!r}")
 
 
-def _eval_term(node: IsTerm, steps: list[int], graph, libs, tnorm: str) -> float:
+def _eval_term(node: IsTerm, steps: list[int], graph, libs) -> float:
     term_defs, _ = libs
     if node.term == "time_ordered":
         times = [int(graph.times[e]) for e in steps]

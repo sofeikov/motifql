@@ -13,7 +13,10 @@
 
 term quickly = trapezoid(0h, 0h, 1h, 12h)   // fully true up to 1h, false by 12h
 term soon = trapezoid(0h, 0h, 6h, 48h)      // fully true up to 6h, false by 48h
-term several = ramp(2, 5)                   // 0 at 2 or fewer, 1 at 5 or more
+term patient = trapezoid(0h, 0h, 24h, 120h)  // HI-Small CYCLE gaps run 13-70h;
+                                            // fully true to 1d, false by 5d
+term several = ramp(1, 3)                   // truth groups are small (2-6 members);
+                                            // 0 at 1 or fewer, 1 at 3 or more
 term many = ramp(3, 8)
 term just_below(limit) = trapezoid(0.85 * limit, 0.95 * limit, 0.999 * limit, limit)
 
@@ -27,7 +30,7 @@ motif round_trip {
   match (a:account) -[e:transfer*2..5]-> (a)
   where e is time_ordered
     and span(e) <= 7d
-  soft  each e: e.gap is soon
+  soft  each e: e.gap is patient
     and each e: e.amount ~= prev.amount within 20%
   score min
   emit when score >= 0.6
@@ -41,7 +44,7 @@ motif round_trip {
 motif layering_chain {
   match (a:account) -[e:transfer*3..6]-> (z:account)
   where e is time_ordered
-    and span(e) <= 2d
+    and span(e) <= 4d
     and a != z
   soft  each e: e.gap is quickly
     and each e: e.amount ~= prev.amount within 10%
@@ -55,10 +58,13 @@ motif layering_chain {
 
 motif fan_out {
   match (s:account) -[e:transfer]-> (r:account)
-  group by s over r window 1d
+  group by s over r window 4d
   having count(distinct r) >= 2
   soft  count(distinct r) is many
-    and @mostly r: e.amount ~= avg(e.amount) within 25%
+  // NOTE: no amount-similarity term. `@mostly r: e.amount ~= avg(...)`
+  // self-defeats in background-enriched groups: background transfers drag
+  // the mean, so truth members score 0 against it (inst 86 measured 0.0).
+  // Count carries the signal; averages need median/anchor-relative forms.
   score product
   emit when score >= 0.5
 }
@@ -69,10 +75,11 @@ motif fan_out {
 
 motif fan_in {
   match (x:account) -[e:transfer]-> (t:account)
-  group by t over x window 1d
+  group by t over x window 4d
   having count(distinct x) >= 2
   soft  count(distinct x) is many
-    and @mostly x: e.amount ~= avg(e.amount) within 25%
+  // NOTE: same as fan_out — avg-similarity dropped, it zeroed truth
+  // (inst 86: count 1.0, @mostly 0.0) via background-dragged means.
   score product
   emit when score >= 0.5
 }
@@ -84,7 +91,7 @@ motif fan_in {
 
 motif scatter_gather {
   match (s:account) -[leg1:transfer]-> (m:account) -[leg2:transfer]-> (d:account)
-  group by s, d over m window 6h
+  group by s, d over m window 48h
   where leg2.time > leg1.time
     and s != d
   having count(distinct m) >= 2
@@ -102,13 +109,17 @@ motif scatter_gather {
 motif gather_scatter {
   match (x:account) -[g:transfer]-> (c:account),
         (c) -[p:transfer]-> (y:account)
-  group by c over x, y window 1d
+  group by c over x, y window 4d
   where p.time > g.time
   having count(distinct x) >= 2
      and count(distinct y) >= 2
   soft  count(distinct x) is several
     and count(distinct y) is several
-    and sum(p.amount) ~= sum(g.amount) within 20%
+    and count(distinct x) ~= count(distinct y) within 1
+  // NOTE: was sum(p.amount) ~= sum(g.amount) within 20%. Sums are
+  // outlier-fragile (one 38M transfer in inst 99) and background sums
+  // swamp truth sums in hub groups (inst 99 measured 0.0). Count-balance
+  // expresses collect-then-redistribute structurally instead.
   score product
   emit when score >= 0.5
 }
@@ -125,7 +136,7 @@ motif bipartite_butterfly {
         (x2) -[e4:transfer]-> (y2)
   where x1 != x2
     and y1 != y2
-    and span(all) <= 1d
+    and span(all) <= 2d
   soft  span(all) is soon
   score min
   emit when score >= 0.6
@@ -143,7 +154,7 @@ motif bipartite_butterfly {
 
 motif structuring_fan_in {
   match (x:account) -[e:transfer]-> (t:account)
-  group by t over x window 1d
+  group by t over x window 4d
   having count(distinct x) >= 3
   soft  count(distinct x) is many
     and most x: e.amount is just_below(10000 USD)

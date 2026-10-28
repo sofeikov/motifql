@@ -64,3 +64,24 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   plus pruning-soundness property tests.
 - `docs/2026-10-29-compiler-matcher.md`: this day's report, including the
   strict-reference-motif finding that sets up the Nov 1 discovery agent.
+
+## Oct 30 — group motifs, butterfly, RQ1 harness
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `src/motifql/planner.py`: `GroupPlan` (fan/scatter/gather roles,
+  having/soft/where validation) and `ButterflyPlan` (2x2 core) alongside
+  `PathPlan`; `prev` in group soft is E_PLAN.
+- `src/motifql/groups.py`: bounded anchor-touched executors per kind
+  (fan adjacency, scatter leg2-anchored, gather p-anchored, butterfly
+  4-edge join), aggregate soft layer reusing `degrees.py` atoms, hub caps
+  with truncation flags; `score_any` dispatches any plan type.
+- `eval/rq1.py`: all-motif train+holdout replay, per-day ranking by
+  top_score, transfer/instance recall at fixed budgets via the shared
+  `eval/evaluate.py` protocol, summary CSV plus per-anchor score parquets
+  for Nov 1 tuning.
+- `tests/test_groups.py`: executor oracles vs brute-force frame loops,
+  firing/having/witness pins, butterfly decoy test; `test_compiler.py`
+  updated for the new plan types.
+- `docs/2026-10-30-group-eval.md`: this day's report, including the
+  zero-fill degeneracy warning for fixed-budget recall of strict motifs.
