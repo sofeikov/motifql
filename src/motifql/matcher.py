@@ -31,7 +31,9 @@ import logging
 from dataclasses import dataclass, field
 
 import numpy as np
+import numpy.typing as npt
 
+from motifql.degrees import eval_soft, step_degrees
 from motifql.graph import SECS_PER_DAY, TemporalGraph
 
 log = logging.getLogger("matcher")
@@ -80,12 +82,12 @@ class _Frame:
     """One DFS level: candidate incoming edges of a node, most recent first."""
 
     node: int
-    edges: np.ndarray = field(repr=False)
+    edges: npt.NDArray[np.uint32] = field(repr=False)
     next_idx: int = 0
 
 
-def _capped(edges: np.ndarray, times: np.ndarray, cap: int
-            ) -> tuple[np.ndarray, bool]:
+def _capped(edges: npt.NDArray[np.uint32], times: npt.NDArray[np.int64], cap: int
+            ) -> tuple[npt.NDArray[np.uint32], bool]:
     """Most-recent-first candidates, capped; flag when the cap bites."""
     order = np.argsort(times, kind="stable")[::-1]
     ranked = edges[order]
@@ -235,6 +237,9 @@ def _walk(
             continue  # simple path (the closing step above is the exception)
         if not closed and hops >= min_hops and prev != receiver:
             stopped = on_accept(tuple(reversed(path + [edge])) + (anchor_pos,))
+        if stopped:
+            break  # accepted and done: skip the now-pointless lookup below,
+            # whose fanout cap could spuriously flag truncation.
         if hops >= max_hops:
             continue
         # Window relative to the anchor, not the edge: edges older than the
@@ -275,8 +280,6 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
     running combination is an upper bound on any completion, so a branch is
     cut once it drops below the best score so far (or the emit threshold).
     """
-    from motifql.degrees import eval_soft, step_degrees
-
     terms, _ = libs
     tnorm = plan.score_tnorm
     emit = plan.emit
@@ -295,6 +298,8 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
     floor = emit
 
     def _parent_degrees(parent_pos: int, cand_pos: int) -> list[float]:
+        # Atoms of one step combine with the motif t-norm; group degrees
+        # combine across steps with min for each/all (LANGUAGE.md section 3).
         t_p = int(graph.times[parent_pos])
         t_c = int(graph.times[cand_pos])
         a_p = float(graph.amount[parent_pos])
@@ -303,7 +308,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
         for group in plan.prunable:
             ds = [step_degrees(a, t_p - t_c, a_p, a_c, terms) for a in group.atoms]
             ds = [d for d in ds if d is not None]
-            out.append(min(ds) if ds else 1.0)
+            out.append(_combine(ds, tnorm) if ds else 1.0)
         return out
 
     def _bound(extra: list[float] | None = None) -> float:
@@ -339,7 +344,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
                                    amounts[i - 1], terms) for a in group.atoms]
                 ds = [d for d in ds if d is not None]
                 if ds:
-                    hits.append((i, min(ds)))
+                    hits.append((i, _combine(ds, tnorm)))
             if hits:
                 deg = min(d for _, d in hits)
                 weakest = min(hits, key=lambda t: t[1])[0] + 1

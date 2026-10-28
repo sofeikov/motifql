@@ -107,6 +107,109 @@ def test_prune_agrees_with_unpruned_on_random_graphs() -> None:
                 assert pruned.top_score == pytest.approx(raw.top_score)
 
 
+def _product_round_trip():
+    # One `each` per line, the reference-file convention: `and` binds
+    # looser than the quantifier body, so a single `each e: A and B` would
+    # mean `(each e: A) and B` and leave `prev` unbound.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.gap is soon and each e: e.amount ~= prev.amount within 20%"
+        + " score product emit when score >= 0.1 }")
+    return doc, compile_motif(doc, "t"), libs_from_doc(doc)
+
+
+def test_product_combines_atoms_per_step() -> None:
+    # 27h gap -> soon = (48-27)/42 = 0.5; 100 -> 110 within 20% -> 1-10/22.
+    # min t-norm would say 0.5; product says 0.5 * 6/11 = 3/11.
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (27 * 60, "002", "B", "001", "A", 110.0),
+            ]
+        )
+    )
+    _, plan, libs = _product_round_trip()
+    assert plan.score_tnorm == "product"
+    res = score(g, 1, plan, libs)
+    assert res.found and res.score == pytest.approx(0.5 * (1 - 10 / 22))
+
+
+def test_some_omits_the_undefined_first_step() -> None:
+    # All defined comparisons fail: `some` must score 0, not 1 from the
+    # skipped first step.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft some e: e.amount ~= prev.amount within 0%"
+        + " score min emit when score >= 0.1 }")
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (10, "002", "B", "003", "C", 200.0),
+                (20, "003", "C", "001", "A", 300.0),
+            ]
+        )
+    )
+    res = score(g, 2, plan, libs)
+    assert res.top_score == 0.0
+
+
+def test_named_quantifier_evaluates() -> None:
+    doc = parse_text(
+        HEADER
+        + "quantifier mostly = ramp(0.6, 0.9)\n"
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft @mostly e: e.gap is soon"
+        + " score min emit when score >= 0.1 }")
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (60, "002", "B", "003", "C", 100.0),
+                (120, "003", "C", "001", "A", 100.0),
+            ]
+        )
+    )
+    res = score(g, 2, plan, libs)
+    assert 0.0 <= res.top_score <= 1.0
+
+
+def test_parameterized_term_instantiates() -> None:
+    # `within` would collide with the `~=` tolerance keyword in the lexer,
+    # so the term is named `inside`: term names shadowing keywords do not
+    # parse (known wart, not part of the v0 surface).
+    doc = parse_text(
+        "term inside(x) = trapezoid(0h, 0h, x, 2*x)\n"
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.gap is inside(6h)"
+        + " score min emit when score >= 0.1 }")
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B", 100.0),
+                (3 * 60, "002", "B", "003", "C", 100.0),
+                (13 * 60, "003", "C", "001", "A", 100.0),
+            ]
+        )
+    )
+    # Gaps 3h (full) and 10h ((12-10)/6 = 1/3): min is 1/3.
+    res = score(g, 2, plan, libs)
+    assert res.found and res.score == pytest.approx(1 / 3)
+
+
 def test_pruning_saves_expansions_on_hub() -> None:
     # 400 stale senders into H, each with its own feeder Y_i, plus one live
     # chain Y -> X0 -> H -> T anchored at H -> T. Every stale branch dies on

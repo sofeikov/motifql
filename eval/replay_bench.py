@@ -125,8 +125,8 @@ def main(
             shards = [anchor_pos[i::n_shards] for i in range(n_shards)]
             shards = [s for s in shards if len(s)]
             ctx = mp.get_context("fork")
-            key_parts: list[np.ndarray] = []
-            lat_parts: list[np.ndarray] = []
+            key_parts: list[npt.NDArray[np.int64]] = []
+            lat_parts: list[npt.NDArray[np.float64]] = []
             found, trunc, expansions = 0, 0, 0
             with ctx.Pool(processes=workers) as pool:
                 for done, (pos, lat, f, t, e) in enumerate(

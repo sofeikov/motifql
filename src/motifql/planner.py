@@ -24,9 +24,10 @@ import logging
 from dataclasses import dataclass
 
 from motifql import checks
+from motifql.degrees import STORED_FIELDS, resolve_term_args
 from motifql.parser import (
-    And, Approx, Call, Comparison, Document, Dur, IsTerm, Money, Motif, Num,
-    Pct, Quantified, Ref,
+    AmountConsCond, And, Approx, Call, Comparison, Document, Dur, GapTermCond,
+    IsTerm, Money, Motif, Num, Pct, Quantified, Ref,
 )
 
 log = logging.getLogger("planner")
@@ -50,25 +51,6 @@ class PlanError(Exception):
 
 
 # -- plan types ----------------------------------------------------------
-
-@dataclass(frozen=True)
-class GapTermCond:
-    """Per-step `e.gap is <term>` (skipped, not failed, on the first step)."""
-
-    var: str
-    term: str
-    term_args: tuple
-    negated: bool
-
-
-@dataclass(frozen=True)
-class AmountConsCond:
-    """Per-step `e.amount ~= prev.amount within <tol>` (skipped on step one)."""
-
-    var: str
-    tol: object  # Pct | Money | Dur | Num
-    negated: bool = False
-
 
 @dataclass(frozen=True)
 class PrunableGroup:
@@ -99,7 +81,10 @@ class PathPlan:
 
 def _split_conjuncts(expr: object) -> list:
     if isinstance(expr, And):
-        return list(expr.items)
+        out: list = []
+        for item in expr.items:
+            out.extend(_split_conjuncts(item))
+        return out
     return [expr]
 
 
@@ -209,9 +194,16 @@ def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
         raise PlanError("E_PLAN", name, "the single edge must be variable-length `*m..n`.",
                         "write the edge as `-[e:transfer*m..n]->`.")
     edge = pat.edges[0]
+    if edge.direction == "in":
+        raise PlanError("E_PLAN", name, "in-edges (`<-[e]-`) are not carried by the backward walk yet.",
+                        "reverse the arrow so edges point away from the anchor, or wait for Oct 30.")
     window_s = _window_of(motif)
-    prunable, deferred = _classify_soft(motif, edge.var)
     closed = pat.nodes[0].var == pat.nodes[-1].var
+    end_vars = (pat.nodes[0].var, pat.nodes[-1].var)
+    account_vars = {n.var for n in pat.nodes}
+    _validate_where(motif, edge.var, closed, end_vars, account_vars)
+    _validate_soft(motif, edge.var, doc)
+    prunable, deferred = _classify_soft(motif, edge.var)
     est = estimate_cost(edge.max_hops, stats) if stats is not None else -1.0
     if stats is not None and est > DEFAULT_COST_BUDGET:
         raise PlanError("E_COST", name,
@@ -219,6 +211,102 @@ def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
                         f"tighten `*{edge.min_hops}..{edge.max_hops}` or the window.")
     return PathPlan(motif.name, edge.var, closed, edge.min_hops, edge.max_hops,
                     window_s, prunable, deferred, motif.score, motif.emit, est)
+
+
+def _validate_where(motif: Motif, edge_var: str, closed: bool,
+                    end_vars: tuple[str, str], account_vars: set[str]) -> None:
+    """Reject `where` conjuncts the walk does not carry out.
+
+    Carried forms: `e is time_ordered`, the span bound, and end-node
+    identity that agrees with the walk (`a != z` on open chains, where the
+    walk structurally guarantees distinct ends). Anything else — amount
+    filters, bank checks, contradictions like `a == z` on an open chain —
+    compiles to a plan that ignores it, so it is an E_PLAN, not a warning.
+    """
+    if motif.where is None:
+        return
+    for conjunct in _split_conjuncts(motif.where):
+        if isinstance(conjunct, IsTerm) and conjunct.term == "time_ordered":
+            if (isinstance(conjunct.base, Ref) and conjunct.base.parts == (edge_var,)
+                    and not conjunct.args):
+                continue
+        elif isinstance(conjunct, Comparison) and conjunct.op in ("<=", "<"):
+            if (isinstance(conjunct.left, Call) and conjunct.left.name == "span"
+                    and isinstance(conjunct.right, (Dur, Num))):
+                continue
+        elif isinstance(conjunct, Comparison) and conjunct.op in ("==", "!="):
+            left, right = conjunct.left, conjunct.right
+            if (isinstance(left, Ref) and isinstance(right, Ref)
+                    and len(left.parts) == 1 and len(right.parts) == 1
+                    and left.parts[0] in account_vars and right.parts[0] in account_vars):
+                ends = {end_vars[0], end_vars[1]}
+                if closed:
+                    raise PlanError("E_PLAN", motif.name,
+                                    f"`{left.parts[0]} {conjunct.op} {right.parts[0]}` is not checked on closed walks.",
+                                    "the walk closes by construction; drop the condition.")
+                if conjunct.op == "!=" and {left.parts[0], right.parts[0]} == ends:
+                    continue  # structurally guaranteed: the walk never revisits
+                raise PlanError("E_PLAN", motif.name,
+                                f"`{left.parts[0]} {conjunct.op} {right.parts[0]}` contradicts the open chain.",
+                                "the walk guarantees distinct ends; drop the condition.")
+        raise PlanError("E_PLAN", motif.name,
+                        f"hard predicate `{_describe(conjunct)}` is not carried out by the walk.",
+                        "keep only `e is time_ordered`, the span bound and end-node identity;"
+                        " per-step hard filters land after Oct 29.")
+
+
+def _describe(node: object) -> str:
+    if isinstance(node, IsTerm):
+        return f"{'.'.join(node.base.parts) if isinstance(node.base, Ref) else '?'} is {node.term}"
+    if isinstance(node, Comparison):
+        return f"{_describe(node.left)} {node.op} {_describe(node.right)}"
+    if isinstance(node, Ref):
+        return ".".join(node.parts)
+    if isinstance(node, Call):
+        return f"{node.name}(...)"
+    return type(node).__name__
+
+
+def _validate_soft(motif: Motif, edge_var: str, doc: Document) -> None:
+    """Reject soft predicates the evaluator cannot score.
+
+    Every field read must be one the store carries (time/amount/gap);
+    every term use must resolve to concrete numbers now (call-site args are
+    literals in v0). Anything else is an E_PLAN at compile time, never a
+    silent zero or a replay abort.
+    """
+    if motif.soft is None:
+        return
+    term_defs = {t.name: t for t in doc.terms}
+    # span() takes the edge var or `all` as a set argument, not a degree:
+    # its argument is exempt from the bare-reference rule below.
+    span_args = set()
+    for node in checks.walk(motif.soft):
+        if isinstance(node, Call) and node.name == "span":
+            span_args.update(id(a) for a in node.args)
+    for node in checks.walk(motif.soft):
+        if id(node) in span_args:
+            continue
+        if isinstance(node, Ref) and len(node.parts) > 1:
+            head, rest = node.parts[0], node.parts[1:]
+            if len(rest) > 1 or head not in (edge_var, "prev"):
+                raise PlanError("E_PLAN", motif.name,
+                                f"reference `{'.'.join(node.parts)}` is not a step field.",
+                                "use time, amount or gap on the path edge or prev.")
+            if rest[0] not in STORED_FIELDS:
+                raise PlanError("E_PLAN", motif.name,
+                                f"field `{rest[0]}` is not carried by the graph store yet.",
+                                "use time, amount or gap; other fields land with store growth.")
+        elif isinstance(node, Ref) and len(node.parts) == 1:
+            raise PlanError("E_PLAN", motif.name,
+                            f"bare `{node.parts[0]}` has no degree in soft.",
+                            "compare or grade a time, amount or gap field instead.")
+        elif isinstance(node, IsTerm) and node.term not in ("time_ordered",):
+            try:
+                resolve_term_args(node.term, node.args, term_defs)
+            except ValueError as exc:
+                raise PlanError("E_PLAN", motif.name, str(exc),
+                                "pass literal call-site arguments for now.") from exc
 
 
 def _window_of(motif: Motif) -> float:

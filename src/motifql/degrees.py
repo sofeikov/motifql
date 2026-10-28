@@ -18,19 +18,49 @@ from __future__ import annotations
 import logging
 
 from motifql.parser import (
-    And, Approx, Call, Dur, IsTerm, Money, Not, Num, Or, Pct,
-    Quantified, Ref,
+    AmountConsCond, And, Approx, Call, Comparison, Dur, GapTermCond, IsTerm,
+    Money, Not, Num, Or, Pct, Quantified, Ref,
 )
-from motifql.planner import AmountConsCond, GapTermCond
 
 log = logging.getLogger("degrees")
 
 
 def libs_from_doc(doc) -> tuple[dict, dict]:
-    """Term and quantifier shapes from a parsed document for evaluators."""
-    terms = {t.name: (t.shape, t.args) for t in doc.terms}
-    quants = {q.name: (q.shape, q.args) for q in doc.quantifiers}
+    """Term and quantifier definitions from a parsed document."""
+    terms = {t.name: t for t in doc.terms}
+    quants = {q.name: q for q in doc.quantifiers}
     return terms, quants
+
+
+# Fields the graph store carries per edge (plus derived gap). Anything else
+# in a soft predicate is an E_PLAN at plan time, never a silent zero.
+STORED_FIELDS = ("time", "amount", "gap")
+
+
+def resolve_term_args(term_name: str, use_args: tuple, term_defs: dict) -> tuple[float, ...]:
+    """Concrete float args for a term use: bind call-site values to params."""
+    tdef = term_defs[term_name]
+    if len(use_args) != len(tdef.params):
+        raise ValueError(f"term `{term_name}` takes {len(tdef.params)} arguments")
+    scope = {formal: _lit(actual) for formal, actual in zip(tdef.params, use_args)}
+    return tuple(_eval_term_arg(a, scope) for a in tdef.args)
+
+
+def _eval_term_arg(node: object, scope: dict[str, float]) -> float:
+    if isinstance(node, Num):
+        return node.value
+    if isinstance(node, Dur):
+        return node.seconds
+    if isinstance(node, Money):
+        return node.amount
+    if isinstance(node, Pct):
+        return node.fraction
+    if isinstance(node, Ref) and len(node.parts) == 1 and node.parts[0] in scope:
+        return scope[node.parts[0]]
+    if isinstance(node, Comparison) and node.op in ("+", "-", "*", "/"):
+        x, y = _eval_term_arg(node.left, scope), _eval_term_arg(node.right, scope)
+        return {"+": x + y, "-": x - y, "*": x * y, "/": x / y}[node.op]
+    raise ValueError(f"non-literal term argument: {node!r}")
 
 
 def term_degree(shape: str, args: tuple[float, ...], x: float) -> float:
@@ -74,14 +104,13 @@ def tol_degree(tol: object, x: float, y: float) -> float:
 
 
 def step_degrees(atom, gap_s: float | None, amount: float,
-                 prev_amount: float | None, terms: dict) -> float | None:
+                 prev_amount: float | None, term_defs: dict) -> float | None:
     """Degree of one prunable atom for a non-first step; None to skip."""
     if isinstance(atom, GapTermCond):
         if gap_s is None:
             return None
-        shape, raw_args = terms[atom.term]
-        args = tuple(_lit(a) for a in raw_args)
-        deg = term_degree(shape, args, gap_s)
+        tdef = term_defs[atom.term]
+        deg = term_degree(tdef.shape, resolve_term_args(atom.term, atom.term_args, term_defs), gap_s)
         return 1.0 - deg if atom.negated else deg
     if isinstance(atom, AmountConsCond):
         if prev_amount is None:
@@ -105,8 +134,6 @@ def _lit(node: object) -> float:
 
 def eval_soft(expr: object, steps: list[int], graph, libs, tnorm: str) -> float:
     """Evaluate a deferred soft expression over completed witness steps."""
-    from motifql.parser import Comparison as Cmp
-
     if isinstance(expr, And):
         return _combine([eval_soft(i, steps, graph, libs, tnorm) for i in expr.items], tnorm)
     if isinstance(expr, Or):
@@ -121,7 +148,7 @@ def eval_soft(expr: object, steps: list[int], graph, libs, tnorm: str) -> float:
         return tol_degree(expr.tol, x, y)
     if isinstance(expr, IsTerm):
         return _eval_term(expr, steps, graph, libs)
-    if isinstance(expr, Cmp):
+    if isinstance(expr, Comparison):
         x = _eval_arith(expr.left, steps, graph)
         y = _eval_arith(expr.right, steps, graph)
         return _compare(expr.op, x, y)
@@ -138,14 +165,23 @@ def _combine(degrees: list[float], tnorm: str) -> float:
 
 
 def _eval_quant(node: Quantified, steps: list[int], graph, libs, tnorm: str) -> float:
-    terms, quants = libs
-    per_step: list[float] = []
+    term_defs, quants = libs
     times = [int(graph.times[e]) for e in steps]
     amounts = [float(graph.amount[e]) for e in steps]
+    per_step: list[float] = []
     for i in range(len(steps)):
-        gap = (times[i] - times[i - 1]) if i > 0 else None
-        prev_amount = amounts[i - 1] if i > 0 else None
-        per_step.append(_eval_in_step(node.body, gap, times[i], amounts[i], prev_amount, graph, libs, tnorm))
+        vals = {"time": float(times[i]), "amount": amounts[i],
+                "gap": float(times[i] - times[i - 1]) if i > 0 else None}
+        pvals = {"time": float(times[i - 1]), "amount": amounts[i - 1],
+                 "gap": None} if i > 0 else None
+        d = _eval_step(node.body, vals, pvals, libs, tnorm)
+        if d is None:
+            continue  # undefined prev/gap on this step: omit the binding
+        per_step.append(d)
+    if not per_step:
+        # No defined bindings: universal quants hold vacuously, existential
+        # ones fail. Witnesses always have >= 2 steps, so this is a backstop.
+        return 1.0 if node.quant in ("each", "all") else 0.0
     q = node.quant
     if q in ("each", "all"):
         return min(per_step)
@@ -160,49 +196,81 @@ def _eval_quant(node: Quantified, steps: list[int], graph, libs, tnorm: str) -> 
     if q == "few":
         return term_degree("ramp_down", (0.1, 0.3), mean)
     if q.startswith("named:"):
-        shape, args = quants[q.split(":")[1]]
-        return term_degree(shape, tuple(args), mean)
+        qdef = quants[q.split(":")[1]]
+        return term_degree(qdef.shape, tuple(_lit(a) for a in qdef.args), mean)
     raise ValueError(f"unknown quantifier {q}")
 
 
-def _eval_in_step(node: object, gap: float | None, t: int, amount: float,
-                  prev_amount: float | None, graph, libs, tnorm: str) -> float:
-    """Evaluate a quantifier body for one step (skips undefined gap/prev)."""
-    terms, _ = libs
+def _eval_step(node: object, vals: dict, pvals: dict | None,
+               libs, tnorm: str) -> float | None:
+    """Degree of one quantifier-body node for one step; None means skip.
+
+    Skips propagate up: And omits them (neutral under min/product), Or omits
+    them (empty Or is 0.0), Not propagates. The plan guarantees every field
+    read here is one the store carries.
+    """
+    term_defs, _ = libs
     if isinstance(node, And):
-        ds = [_eval_in_step(i, gap, t, amount, prev_amount, graph, libs, tnorm)
-              for i in node.items]
-        return _combine(ds, tnorm)
+        ds = [_eval_step(i, vals, pvals, libs, tnorm) for i in node.items]
+        ds = [d for d in ds if d is not None]
+        return _combine(ds, tnorm) if ds else 1.0
     if isinstance(node, Or):
-        return max([_eval_in_step(i, gap, t, amount, prev_amount, graph, libs, tnorm)
-                    for i in node.items])
+        ds = [_eval_step(i, vals, pvals, libs, tnorm) for i in node.items]
+        ds = [d for d in ds if d is not None]
+        return max(ds) if ds else 0.0
     if isinstance(node, Not):
-        return 1.0 - _eval_in_step(node.body, gap, t, amount, prev_amount, graph, libs, tnorm)
-    if isinstance(node, IsTerm) and node.term in terms and isinstance(node.base, Ref):
-        parts = node.base.parts
-        if len(parts) == 2 and parts[1] == "gap":
-            if gap is None:
-                return 1.0  # skipped on the first step: must not lower the score
-            shape, raw_args = terms[node.term]
-            deg = term_degree(shape, tuple(_lit(a) for a in raw_args), float(gap))
-            return 1.0 - deg if node.negated else deg
+        d = _eval_step(node.body, vals, pvals, libs, tnorm)
+        return None if d is None else 1.0 - d
+    if isinstance(node, IsTerm) and node.term in term_defs:
+        v = _resolve_ref(node.base, vals, pvals)
+        if v is None:
+            return None
+        tdef = term_defs[node.term]
+        deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
+        return 1.0 - deg if node.negated else deg
     if isinstance(node, Approx):
-        y = prev_amount
-        if y is None:
-            return 1.0  # prev undefined on the first step: skip
-        return tol_degree(node.tol, amount, y)
+        x = _resolve_arith(node.left, vals, pvals)
+        y = _resolve_arith(node.right, vals, pvals)
+        if x is None or y is None:
+            return None
+        return tol_degree(node.tol, x, y)
+    if isinstance(node, Comparison) and node.op not in ("+", "-", "*", "/"):
+        x = _resolve_arith(node.left, vals, pvals)
+        y = _resolve_arith(node.right, vals, pvals)
+        if x is None or y is None:
+            return None
+        return _compare(node.op, x, y)
     raise ValueError(f"cannot evaluate per step: {node!r}")
 
 
+def _resolve_ref(ref: Ref, vals: dict, pvals: dict | None) -> float | None:
+    if len(ref.parts) == 1:
+        raise ValueError(f"bare variable `{ref.parts[0]}` has no degree")
+    if ref.parts[0] == "prev":
+        if pvals is None:
+            return None
+        return pvals.get(ref.parts[1])
+    return vals.get(ref.parts[1])
+
+
+def _resolve_arith(node: object, vals: dict, pvals: dict | None) -> float | None:
+    if isinstance(node, (Num, Dur, Money, Pct)):
+        return _lit(node)
+    if isinstance(node, Ref):
+        return _resolve_ref(node, vals, pvals)
+    raise ValueError(f"cannot evaluate arithmetic per step: {node!r}")
+
+
 def _eval_term(node: IsTerm, steps: list[int], graph, libs, tnorm: str) -> float:
-    terms, _ = libs
+    term_defs, _ = libs
     if node.term == "time_ordered":
         times = [int(graph.times[e]) for e in steps]
         return 1.0 if all(b > a for a, b in zip(times, times[1:])) else 0.0
     if isinstance(node.base, Call) and node.base.name == "span":
         times = [int(graph.times[e]) for e in steps]
-        shape, raw_args = terms[node.term]
-        deg = term_degree(shape, tuple(_lit(a) for a in raw_args), float(times[-1] - times[0]))
+        tdef = term_defs[node.term]
+        deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs),
+                          float(times[-1] - times[0]))
         return 1.0 - deg if node.negated else deg
     raise ValueError(f"cannot evaluate term use: {node!r}")
 

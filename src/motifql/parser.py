@@ -166,6 +166,25 @@ class QuantifierDef:
 
 
 @dataclass(frozen=True)
+class GapTermCond:
+    """Prunable per-step `e.gap is <term>` (skipped, not failed, on step one)."""
+
+    var: str
+    term: str
+    term_args: tuple
+    negated: bool
+
+
+@dataclass(frozen=True)
+class AmountConsCond:
+    """Prunable per-step `e.amount ~= prev.amount within <tol>` (ditto)."""
+
+    var: str
+    tol: object  # Pct | Money | Dur | Num
+    negated: bool = False
+
+
+@dataclass(frozen=True)
 class GroupClause:
     keys: tuple[str, ...]
     members: tuple[str, ...]

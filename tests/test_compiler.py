@@ -143,6 +143,32 @@ def test_group_and_multipattern_rejected() -> None:
         compile_motif(_doc(), "bipartite_butterfly")
 
 
+def test_where_only_carries_what_the_walk_does() -> None:
+    base = "motif t { match (a:account) -[e:transfer*2..5]-> (a) "
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER + base
+            + "where e is time_ordered and span(e) <= 7d and a.bank != a.bank }"), "t")
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER + base
+            + "where e is time_ordered and span(e) <= 7d"
+            + " and each e: e.amount >= 1000000 USD }"), "t")
+
+
+def test_in_edges_rejected() -> None:
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) <-[e:transfer*2..5]- (a)"
+            + " where e is time_ordered and span(e) <= 7d }"), "t")
+
+
+def test_soft_field_must_be_carried() -> None:
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where e is time_ordered and span(e) <= 7d"
+            + " soft each e: e.amount_paid ~= prev.amount_paid within 5% }"), "t")
+
+
 def test_cost_budget_rejects_huge_hops() -> None:
     dense = np.zeros(30)
     dense[20] = 100.0  # mean in-degree 10: *2..5 estimates ~1e5, passes
