@@ -33,7 +33,9 @@ motif round_trip {
   soft  each e: e.gap is patient
     and each e: e.amount ~= prev.amount within 20%
   score min
-  emit when score >= 0.6
+  // NOTE: emit 0.5, not 0.6 — four train cycles sit in [0.5, 0.6)
+  // (8/9 caught vs 4/9) for +10 background fires/day (Nov 1 tuning).
+  emit when score >= 0.5
 }
 
 // ---------------------------------------------------------------------------
@@ -42,15 +44,20 @@ motif round_trip {
 // ---------------------------------------------------------------------------
 
 motif layering_chain {
-  match (a:account) -[e:transfer*3..6]-> (z:account)
+  match (a:account) -[e:transfer*5..8]-> (z:account)
   where e is time_ordered
-    and span(e) <= 4d
+    and span(e) <= 10d
     and a != z
-  soft  each e: e.gap is quickly
-    and each e: e.amount ~= prev.amount within 10%
+  soft  each e: e.gap is patient
+    and each e: e.amount ~= prev.amount within 25%
   score min
-  emit when score >= 0.7
+  emit when score >= 0.5
 }
+// NOTE (Nov 1 refit): length separates. Background has no long smooth
+// chains (1600-anchor sample: max score exactly 0.0), while the three
+// n>=5 train chains catch (1.0/0.86/0.61) — 3/15 is the ceiling, the
+// rest have <5 members. `quickly` bound truth gaps (p50 8h -> 0.35);
+// `within 10%` read truth's 5-11% wobble as ~0. Fragments stay out.
 
 // ---------------------------------------------------------------------------
 // 3. Fan-out: one account pays many distinct accounts.
@@ -91,13 +98,15 @@ motif fan_in {
 
 motif scatter_gather {
   match (s:account) -[leg1:transfer]-> (m:account) -[leg2:transfer]-> (d:account)
-  group by s, d over m window 48h
+  group by s, d over m window 7d
   where leg2.time > leg1.time
     and s != d
   having count(distinct m) >= 2
   soft  count(distinct m) is several
-    and most m: leg2.amount ~= leg1.amount within 15%
     and sum(leg2.amount) ~= sum(leg1.amount) within 20%
+  // NOTE: no per-mid amount match. Truth pools funds across mids (sums
+  // balance 0.90+ while mids mismatch), so `most m` zeroed real
+  // scatters; the window is 7d because truth spans 60-96h (Nov 1 tuning).
   score product
   emit when score >= 0.5
 }
@@ -115,7 +124,7 @@ motif gather_scatter {
      and count(distinct y) >= 2
   soft  count(distinct x) is several
     and count(distinct y) is several
-    and count(distinct x) ~= count(distinct y) within 2  // not 1: tolerance scores 0 at exactly the width
+    and count(distinct x) ~= count(distinct y) within 4  // not 2: pooled truth runs diff-2 (0 at width 2)
   // NOTE: was sum(p.amount) ~= sum(g.amount) within 20%. Sums are
   // outlier-fragile (one 38M transfer in inst 99) and background sums
   // swamp truth sums in hub groups (inst 99 measured 0.0). Count-balance

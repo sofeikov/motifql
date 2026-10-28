@@ -374,3 +374,33 @@ def test_real_cycle_top_score_matches_unpruned() -> None:
     assert (pruned.witness, pruned.score) == (raw.witness, raw.score)
     assert 0.65 < raw.top_score < 0.80
     assert pruned.expansions < raw.expansions
+
+
+def test_all_but_forgives_one_bad_step() -> None:
+    # all but K drops the K worst bindings: one 5x amount jump zeroes
+    # `each` but `all but 1` still fires. Completion-only on paths, so
+    # pruned and unpruned must agree exactly.
+    rows = [(0, "001", "A", "001", "B", 100.0),
+            (10, "001", "B", "001", "C", 100.0),
+            (20, "001", "C", "001", "D", 100.0),
+            (30, "001", "D", "001", "A", 500.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+
+    def _plan(quant: str):
+        doc = parse_text(
+            HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where e is time_ordered and span(e) <= 7d"
+            + f" soft {quant} e: e.amount ~= prev.amount within 20%"
+            + " score min emit when score >= 0.5 }")
+        return doc, compile_motif(doc, "t"), libs_from_doc(doc)
+
+    _, plan, libs = _plan("each")
+    strict = score(g, 3, plan, libs, prune=False)
+    assert not strict.found and strict.top_score == pytest.approx(0.0)
+    _, plan, libs = _plan("all but 1")
+    pruned = score(g, 3, plan, libs, prune=True)
+    raw = score(g, 3, plan, libs, prune=False)
+    assert pruned.found and raw.found
+    assert (pruned.witness, pruned.score) == (raw.witness, raw.score)
+    assert raw.top_score == pytest.approx(1.0)

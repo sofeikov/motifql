@@ -36,14 +36,14 @@ def test_reference_file_parses_and_passes() -> None:
     assert [n.var for n in pat.nodes] == ["a", "a"]
     (edge,) = pat.edges
     assert (edge.var, edge.direction, edge.min_hops, edge.max_hops) == ("e", "out", 2, 5)
-    assert rt.score == "min" and rt.emit == 0.6
+    assert rt.score == "min" and rt.emit == 0.5
 
 
 def test_group_windows_parse() -> None:
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
     by_name = {m.name: m for m in doc.motifs}
     assert by_name["fan_out"].group.window_s == 4 * 86400.0
-    assert by_name["scatter_gather"].group.window_s == 48 * 3600.0
+    assert by_name["scatter_gather"].group.window_s == 7 * 86400.0
     assert by_name["scatter_gather"].group.keys == ("s", "d")
 
 
@@ -88,6 +88,10 @@ def test_fuzzy_stays_out_of_where() -> None:
         " group by a over b window 1d"
         " having count(distinct b) >= 2"
         " where span(all) <= 1d }") == []
+    # all but K is fuzzy-only (crisp body, so only the quantifier errors).
+    assert "E_CRISP" in _codes(
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d and all but 1 e: e.amount >= 0 USD }")
 
 
 def test_scoping_errors() -> None:
@@ -164,13 +168,13 @@ def test_round_trip_plan() -> None:
         "each e: amount ~= prev.amount within 20%",
     ]
     assert plan.deferred is None
-    assert plan.score_tnorm == "min" and plan.emit == 0.6
+    assert plan.score_tnorm == "min" and plan.emit == 0.5
     assert plan.est_expansions == -1.0  # no stats: unwired
 
 
 def test_layering_chain_plan_is_open() -> None:
     plan = compile_motif(_doc(), "layering_chain")
-    assert not plan.closed and (plan.min_hops, plan.max_hops) == (3, 6)
+    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 8)
     assert len(plan.prunable) == 2
 
 

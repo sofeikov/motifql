@@ -42,8 +42,8 @@ the language.
 
 - Comments run from `//` to end of line.
 - **Names** are lowercase-first identifiers. Reserved words (`all`, `and`,
-  `at`, `distinct`, `each`, `false`, `few`, `is`, `least`, `most`, `not`,
-  `or`, `some`, `true`, `within`) can't be used as names.
+  `at`, `but`, `distinct`, `each`, `false`, `few`, `is`, `least`, `most`,
+  `not`, `or`, `some`, `true`, `within`) can't be used as names.
 - **Literals:**
   - numbers: `12`, `0.85`
   - durations: `30m`, `6h`, `7d`, `2w`, `500ms`
@@ -84,12 +84,19 @@ Quantifiers range over the bindings of one variable (see §5). Built-ins:
 | `each` / `all` | every binding holds | minimum degree |
 | `some` | at least one holds | maximum degree |
 | `at least N` | at least N hold | N-th largest degree |
+| `all but K` | — | (K+1)-th smallest degree (drops the K worst bindings; 1.0 when K covers all bindings) |
 | `most` | — | `ramp(0.5, 0.8)` applied to the mean degree |
 | `few` | — | `ramp_down(0.1, 0.3)` applied to the mean degree |
 | `@name` | — | a user `quantifier` applied to the mean degree |
 
 `most` and `few` are relative quantifiers in Zadeh's sense: they score the
-share of bindings that satisfy the body.
+share of bindings that satisfy the body. `all but K` is the robust
+universal: like `each`, except K outlier bindings are forgiven. It is
+fuzzy-only (a static error in `where`/`having`) and completion-only on
+paths — dropping the worst K is non-monotone as the walk extends, so
+the matcher never prunes on it. Choose K below the minimum defined
+bindings (hops−1 on paths, since the first step skips `prev`): a
+2-hop cycle has 1 defined step, so `all but 1` vacates to 1.0 there.
 
 ## 4. Motifs
 

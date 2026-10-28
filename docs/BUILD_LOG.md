@@ -128,3 +128,30 @@ from a second review thread with independent repros:
 - `src/motifql/groups.py`: scatter aggregates range over every valid
   leg edge (was one pair per member).
 - Baselines + RQ1 rerun; Oct 27 §10 and Oct 30 §8 corrections.
+
+## Nov 1 (tuning) — calibration pass
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `docs/2026-11-01-tuning.md`: train-fit tuning report. Adopted:
+  round_trip emit 0.6→0.5 (8/9 train, 3/3 holdout CYCLE), scatter
+  window 7d + dropped per-mid amount term (0/7→4/7 train, all
+  catchable), gather balance within 4 (4/6→5/6 train).
+- Rejected with evidence: fan several (precision death), layering
+  threshold/*2 (truth below background), butterfly (proof: no 2×2 in
+  any of 49 truth instances), structuring (demo, no truth).
+- Full unpruned RQ1 rerun with tuned motifs; reference pins updated
+  (91/91 pass).
+
+## Nov 1 (cont.) — motif refits + `all but K`
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `docs/2026-11-02-refits.md`: layering recovered to ceiling (*5..8
+  reshape, 1/15→3/15, background 0/1600), scatter-fragment rejected
+  (floods; misses are 2-cycle orphans), inst 128 diagnosed
+  (time-disordered 7-cycle, round_trip ceiling 8/9).
+- Language: shipped `all but K` (grammar, checks, both evaluators,
+  LANGUAGE.md, 3 tests); killed graded-having (no new power),
+  pairing/B2 (overlap + engine cost), weights (no customer).
+- Self-loop group-inclusion pinned; no full replays (94/94 pass).

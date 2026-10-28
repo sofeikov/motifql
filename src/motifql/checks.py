@@ -154,9 +154,10 @@ class _Checker:
             elif isinstance(node, Quantified) and (
                 node.quant in ("most", "few")
                 or node.quant.startswith("named:")
+                or node.quant.startswith("all_but:")
                 or node.quant in self.quantifiers
             ):
-                # each/all/some/at_least:N are crisp; most/few/named are fuzzy.
+                # each/all/some/at_least:N are crisp; most/few/all_but/named are fuzzy.
                 self.err("E_CRISP", motif, f"quantifier `{node.quant}` is fuzzy and cannot appear in `{clause}`.",
                          "use `each`/`all`/`some`/`at least N` here, or move the condition to `soft`.")
 

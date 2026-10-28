@@ -121,7 +121,7 @@ class IsTerm:
 
 @dataclass(frozen=True)
 class Quantified:
-    quant: str  # each|all|some|most|few|at_least:N|named:name
+    quant: str  # each|all|all_but:K|some|most|few|at_least:N|named:name
     var: str
     body: object
 
@@ -393,6 +393,9 @@ class _ToAST(Transformer):
 
     def q_all(self, _c: list) -> str:
         return "all"
+
+    def q_all_but(self, children: list) -> str:
+        return f"all_but:{children[0].value}"
 
     def q_some(self, _c: list) -> str:
         return "some"
