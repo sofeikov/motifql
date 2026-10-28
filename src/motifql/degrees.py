@@ -215,19 +215,19 @@ def _eval_step(node: object, vals: dict, pvals: dict | None,
                libs, tnorm: str) -> float | None:
     """Degree of one quantifier-body node for one step; None means skip.
 
-    Skips propagate up: And omits them (neutral under min/product), Or omits
-    them (empty Or is 0.0), Not propagates. The plan guarantees every field
-    read here is one the store carries.
+    Skips propagate up: And/Or omit skipped children, and an And/Or whose
+    children are all skipped is itself skipped (None); Not propagates.
+    The plan guarantees every field read here is one the store carries.
     """
     term_defs, _ = libs
     if isinstance(node, And):
         ds = [_eval_step(i, vals, pvals, libs, tnorm) for i in node.items]
         ds = [d for d in ds if d is not None]
-        return _combine(ds, tnorm) if ds else 1.0
+        return _combine(ds, tnorm) if ds else None
     if isinstance(node, Or):
         ds = [_eval_step(i, vals, pvals, libs, tnorm) for i in node.items]
         ds = [d for d in ds if d is not None]
-        return max(ds) if ds else 0.0
+        return max(ds) if ds else None
     if isinstance(node, Not):
         d = _eval_step(node.body, vals, pvals, libs, tnorm)
         return None if d is None else 1.0 - d

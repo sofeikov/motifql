@@ -288,11 +288,11 @@ def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str) -> float
     if isinstance(node, And):
         ds = [_eval_member(i, vals, ctx, libs, tnorm) for i in node.items]
         ds = [d for d in ds if d is not None]
-        return _combine(ds, tnorm) if ds else 1.0
+        return _combine(ds, tnorm) if ds else None
     if isinstance(node, Or):
         ds = [_eval_member(i, vals, ctx, libs, tnorm) for i in node.items]
         ds = [d for d in ds if d is not None]
-        return max(ds) if ds else 0.0
+        return max(ds) if ds else None
     if isinstance(node, Not):
         d = _eval_member(node.body, vals, ctx, libs, tnorm)
         return None if d is None else 1.0 - d
@@ -480,10 +480,10 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
                      key=lambda s: (int(graph.times[leg1_by_sender[s]]), s))[-SCATTER_MAX_SENDERS:]
     if len(leg1_by_sender) > len(senders):
         truncated = True
-    # Most recent leg2 edge per intermediary into d.
-    leg2_by_mid: dict[int, int] = {}
+    # Leg2 edges per intermediary into d, oldest first.
+    leg2s_by_mid: dict[int, list[int]] = {}
     for e in sorted(in_d.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
-        leg2_by_mid[int(graph.frm[int(e)])] = int(e)
+        leg2s_by_mid.setdefault(int(graph.frm[int(e)]), []).append(int(e))
     best: tuple[float, list[tuple], list[int]] | None = None
     for s in senders:
         if s == d_node:
@@ -496,44 +496,48 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
         mids: dict[int, list[int]] = {}
         for e in sorted(out_s.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
             mids.setdefault(int(graph.to[int(e)]), []).append(int(e))
-        members: dict[int, tuple[int, int]] = {}
+        members: dict[int, tuple[list[int], list[int]]] = {}
         for mid, leg1s in mids.items():
             if mid == d_node:
                 continue
             if mid == m0:
-                leg2 = int(anchor_pos)
-            elif mid in leg2_by_mid:
-                leg2 = leg2_by_mid[mid]
+                leg2s = leg2s_by_mid.get(mid, []) + [int(anchor_pos)]
+            elif mid in leg2s_by_mid:
+                leg2s = leg2s_by_mid[mid]
             else:
                 continue
-            t2 = int(graph.times[leg2])
-            # Most recent leg1 strictly before the chosen leg2: an older
-            # pair stays valid when a newer leg1 postdates leg2.
-            leg1 = next((e for e in reversed(leg1s) if int(graph.times[e]) < t2), None)
-            if leg1 is None:
+            # Aggregates range over every edge joining a valid pair: a leg1
+            # before the latest leg2, a leg2 after the earliest leg1. The
+            # mid qualifies iff the two sides overlap in that order.
+            latest_l2 = int(graph.times[leg2s[-1]])
+            earliest_l1 = int(graph.times[leg1s[0]])
+            if not earliest_l1 < latest_l2:
                 continue
-            members[mid] = (int(leg1), int(leg2))
+            valid_l1 = [e for e in leg1s if int(graph.times[e]) < latest_l2]
+            valid_l2 = [e for e in leg2s if int(graph.times[e]) > earliest_l1]
+            members[mid] = (valid_l1, valid_l2)
         if m0 not in members and s in leg1_by_sender:
             # The anchor's own leg1 with no separate leg2 record: anchor is leg2.
+            # (Only reachable when caps cut m0's out-edges; normally m0 pairs above.)
             leg1 = leg1_by_sender[s]
             if int(graph.times[int(anchor_pos)]) > int(graph.times[leg1]):
-                members[m0] = (int(leg1), int(anchor_pos))
+                members[m0] = ([int(leg1)], [int(anchor_pos)])
         ctx = _Ctx()
         ctx.counts[m_var] = len(members)
-        l1 = [float(graph.amount[l1]) for l1, _ in members.values()]
-        l2 = [float(graph.amount[l2]) for _, l2 in members.values()]
+        l1 = [float(graph.amount[e]) for l1s, _ in members.values() for e in l1s]
+        l2 = [float(graph.amount[e]) for _, l2s in members.values() for e in l2s]
         ctx.edge_amounts[leg1_var] = l1
-        ctx.edge_times[leg1_var] = [float(graph.times[l1]) for l1, _ in members.values()]
+        ctx.edge_times[leg1_var] = [float(graph.times[e]) for l1s, _ in members.values() for e in l1s]
         ctx.edge_amounts[leg2_var] = l2
-        ctx.edge_times[leg2_var] = [float(graph.times[l2]) for _, l2 in members.values()]
+        ctx.edge_times[leg2_var] = [float(graph.times[e]) for _, l2s in members.values() for e in l2s]
         all_t = ctx.edge_times[leg1_var] + ctx.edge_times[leg2_var]
         ctx.span = max(all_t) - min(all_t) if all_t else 0.0
         ctx.member_vals[m_var] = {
-            mid: {(leg1_var, "amount"): float(graph.amount[l1]),
-                  (leg1_var, "time"): float(graph.times[l1]),
-                  (leg2_var, "amount"): float(graph.amount[l2]),
-                  (leg2_var, "time"): float(graph.times[l2])}
-            for mid, (l1, l2) in members.items()
+            mid: {(leg1_var, "amount"): float(graph.amount[l1s[-1]]),
+                  (leg1_var, "time"): float(graph.times[l1s[-1]]),
+                  (leg2_var, "amount"): float(graph.amount[l2s[-1]]),
+                  (leg2_var, "time"): float(graph.times[l2s[-1]])}
+            for mid, (l1s, l2s) in members.items()
         }
         if plan.having is not None and not _eval_having(plan.having, ctx):
             continue
@@ -541,7 +545,7 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
             s_score, degs = 1.0, []
         else:
             s_score, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm)
-        witness = sorted({e for pair in members.values() for e in pair},
+        witness = sorted({e for l1s, l2s in members.values() for e in (*l1s, *l2s)},
                          key=lambda p: (int(graph.times[p]), int(p)))
         if best is None or s_score > best[0]:
             best = (s_score, degs, witness)
@@ -702,13 +706,18 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
 
 # -- dispatch --------------------------------------------------------------
 
-def score_any(graph, anchor_pos: int, plan, libs):
-    """Score one anchor against any Oct 30 plan type."""
+def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True):
+    """Score one anchor against any Oct 30 plan type.
+
+    Ranking callers must pass `prune=False`: under pruning a path
+    motif's top_score can only be 0 or >= emit, so every below-emit
+    anchor ties at 0 instead of ranking by its best witness.
+    """
     from motifql import planner as _planner
 
     if isinstance(plan, _planner.PathPlan):
         from motifql.matcher import score as _path_score
-        return _path_score(graph, anchor_pos, plan, libs)
+        return _path_score(graph, anchor_pos, plan, libs, prune=prune)
     if isinstance(plan, _planner.GroupPlan):
         return score_group(graph, anchor_pos, plan, libs)
     if isinstance(plan, _planner.ButterflyPlan):

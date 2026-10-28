@@ -67,7 +67,9 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
     exps = np.empty(n, dtype=np.float64)
     trunc = np.empty(n, dtype=bool)
     for i, pos in enumerate(positions.tolist()):
-        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS)
+        # Unpruned: RQ1 ranks by the best witness even below emit, and
+        # pruning zeroes every sub-emit top_score.
+        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS, prune=False)
         top[i] = res.top_score
         found[i] = res.found
         exps[i] = res.expansions

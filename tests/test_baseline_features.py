@@ -14,16 +14,18 @@ from eval.features import trailing_count_sum, trailing_distinct, WINDOWS
 
 
 def brute(df, acct_col, peer_col, prefix):
-    """Reference implementation: for each row, filter strictly prior
-    same-account rows inside each window. O(n*w); obviously correct."""
+    """Reference implementation: for each row, filter strictly earlier
+    same-account rows inside each window. Same-timestamp rows never count
+    each other, so this scans all rows and is input-order free. O(n*w);
+    obviously correct."""
     rows = df.to_dicts()
     out = {}
-    for i, r in enumerate(rows):
+    for r in rows:
         res = {}
         for w, wus in WINDOWS.items():
             lo = r["timestamp"] - timedelta(microseconds=wus)
-            prior = [q for q in rows[:i]
-                     if q[acct_col] == r[acct_col] and q["timestamp"] >= lo]
+            prior = [q for q in rows
+                     if q[acct_col] == r[acct_col] and lo <= q["timestamp"] < r["timestamp"]]
             res[f"{prefix}_count_{w}"] = len(prior)
             res[f"{prefix}_distinct_{w}"] = len({q[peer_col] for q in prior})
             res[f"{prefix}_sum_{w}"] = sum((q["amount_usd"] or 0) for q in prior)
@@ -35,18 +37,21 @@ def check(df):
     """Both directions, all windows: implementation equals brute force.
 
     Counts are exact integers; sums allow prefix-subtraction rounding.
+    Each frame is also checked row-shuffled: features must not depend
+    on file order within a timestamp (E2).
     """
-    for acct, peer, prefix in (("a", "p", "out"), ("p", "a", "in")):
-        got = (trailing_count_sum(df, acct, prefix)
-               .join(trailing_distinct(df, acct, peer, prefix),
-                     on="transfer_id", how="inner", maintain_order="left")
-               .sort("transfer_id").to_dicts())
-        exp = brute(df, acct, peer, prefix)
-        assert len(got) == len(exp) == len(df)
-        for g in got:
-            for k, v in exp[g["transfer_id"]].items():
-                tol = 0.0 if k.split("_")[1] != "sum" else 1e-6 + 1e-9 * abs(v)
-                assert abs(float(g[k]) - float(v)) <= tol, (prefix, g["transfer_id"], k)
+    for frame in (df, df.sample(fraction=1.0, shuffle=True, seed=4)):
+        for acct, peer, prefix in (("a", "p", "out"), ("p", "a", "in")):
+            got = (trailing_count_sum(frame, acct, prefix)
+                   .join(trailing_distinct(frame, acct, peer, prefix),
+                         on="transfer_id", how="inner", maintain_order="left")
+                   .sort("transfer_id").to_dicts())
+            exp = brute(df, acct, peer, prefix)
+            assert len(got) == len(exp) == len(df)
+            for g in got:
+                for k, v in exp[g["transfer_id"]].items():
+                    tol = 0.0 if k.split("_")[1] != "sum" else 1e-6 + 1e-9 * abs(v)
+                    assert abs(float(g[k]) - float(v)) <= tol, (prefix, g["transfer_id"], k)
 
 
 def test_edge_cases():

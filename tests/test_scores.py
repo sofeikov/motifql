@@ -108,6 +108,39 @@ def test_per_step_arithmetic_evaluates() -> None:
     assert not score(cold, 1, plan, libs).found
 
 
+def test_compound_body_skips_first_step() -> None:
+    # E5: a quantifier body whose atoms all skip on the first step is
+    # itself skipped — previously `some` over an `and` always scored 1.0.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft some e: (e.gap is soon and e.amount ~= prev.amount within 10%)"
+        + " score min emit when score >= 0.6 }"
+    )
+    plan = compile_motif(doc, "t")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "A", "002", "B", 100.0),
+        (10, "002", "B", "001", "A", 10000.0),
+    ]))
+    res = score(g, 1, plan, libs)
+    assert not res.found and res.top_score == 0.0
+
+
+def test_skip_propagates_through_operators() -> None:
+    # E5: all-skipped `and`/`or` evaluate to None (skip), not 1.0/0.0,
+    # so `not` and the quantifier propagate the skip.
+    from motifql.parser import And, Approx, IsTerm, Not, Or, Ref
+    gap = IsTerm(Ref(("e", "gap")), False, "soon", ())
+    amt = Approx(Ref(("e", "amount")), Ref(("prev", "amount")), Pct(0.1))
+    libs = libs_from_doc(parse_text(HEADER))
+    vals = {"time": 1.0, "amount": 100.0, "gap": None}  # first step
+    assert D._eval_step(And((gap, amt)), vals, None, libs, "min") is None
+    assert D._eval_step(Or((gap, amt)), vals, None, libs, "min") is None
+    assert D._eval_step(Not(And((gap, amt))), vals, None, libs, "min") is None
+
+
 def test_prune_agrees_with_unpruned_on_random_graphs() -> None:
     rng = np.random.default_rng(9)
     _, plan, libs = _round_trip()

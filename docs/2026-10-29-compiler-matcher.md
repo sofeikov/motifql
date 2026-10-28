@@ -133,4 +133,7 @@ found-agreement and 0.9995 top-score agreement — the soundness story is
 intact. Train CYCLE hits at emit: 102 (0.72), 142 (0.90), 159 (0.92).
 The §4 "8k/day background" concern inverts for `round_trip`: background
 is now 23/day and no threshold fills a 500/day budget (threshold 0.0).
-Holdout/RQ1 readings are corrected in the Oct 30 report.
+Holdout/RQ1 readings are corrected in the Oct 30 report. (Nov 1: RQ1
+ranks unpruned since — round_trip nonzero rates are 76/93 per day
+rather than 23/24, still far below budget, so the threshold-0.0 line
+stands; see the Oct 30 report §8.)

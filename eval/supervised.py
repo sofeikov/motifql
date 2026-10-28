@@ -85,8 +85,11 @@ def main(
     for model, use_fmt in (("gbm", True), ("gbm_noformat", False)):
         X = np.concatenate([X18, Xfmt], axis=1) if use_fmt else X18
         names = feat_names + [f"fmt_{f}" for f in FORMATS] if use_fmt else feat_names
-        neg, pos = (y[is_fit] == 0).sum(), (y[is_fit] == 1).sum()
-        clf = lgb.LGBMClassifier(objective="binary", scale_pos_weight=neg / pos,
+        # No scale_pos_weight: the evaluation ranks transfers, and with a
+        # weight in the hundreds the first tree overshoots from the
+        # unweighted base rate, so early stopping keeps iteration 1 and
+        # the scores collapse to a few dozen distinct values.
+        clf = lgb.LGBMClassifier(objective="binary",
                                  num_leaves=63, min_child_samples=200,
                                  learning_rate=0.05, n_estimators=1000,
                                  importance_type="gain",

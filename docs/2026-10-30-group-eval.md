@@ -189,3 +189,44 @@ of 0 — `gather_scatter` moves to 31,284/day train, 12,828/day holdout
 RANDOM 3, FAN-IN 2, CYCLE 1. All other motifs replay bit-identical
 (M4/M5 never trigger on the reference shapes at these caps). 84/84
 tests pass.
+
+## 8. Eval-leak correction (Nov 1): honest ranking
+
+A second review thread (issue #6, E1–E6) found the budget tables
+measured file order, not ranking: score ties broke by `transfer_id`
+(raw CSV order, which clusters laundering rows early in the day), and
+path motifs ranked pruned scores (0 or ≥ emit), so every sub-emit
+anchor tied at 0. Fixed: ties break by a keyed hash (deterministic,
+label-blind); RQ1 ranks path motifs unpruned (full replay, ~50 min on
+16 workers); scatter aggregates range over every valid leg edge.
+At-emit results are unaffected (no ranking; pruning is exact at emit),
+except scatter (7→6 train, 1→2 holdout fires — still 0/1 caught).
+
+Nonzeros/day, train→holdout (fires in parens, unchanged):
+
+| motif | before | after |
+|---|---|---|
+| round_trip | 22.6/24.0 | 76.0/93.3 (22.6/24.0 fires) |
+| layering_chain | 3.4/16.0 | 186.0/482.0 (3.4/16.0 fires) |
+
+Transfer hits @500/day, ALL_FLAGGED (1,495): round_trip 59,
+layering_chain 34, scatter_gather 14, bipartite_butterfly 12, fan_in
+7, fan_out 2, gather_scatter 1, structuring_fan_in 1. The old 706/704
+path numbers were the tie-break leak plus pruned zeros.
+
+Completable instances @500/day: round_trip 21/29 (CYCLE 3/3, plus
+6/9 BIPARTITE and scattered cross-pattern), layering_chain 0/29,
+butterfly 1/29 (FAN-IN), fan_out 0/29, fan_in 0/29, scatter 0/29,
+gather 0/29, structuring 0/29. All 21 round_trip catches come via
+nonzero members — the zero-filled budget remainder contributes
+nothing now, which retires the §3 degeneracy paragraph as an E1
+artifact. (Layering catches 7 all-set instances off holdout-day
+members of cross-split instances; none completable.)
+
+Reading for Nov 1: closed-walk evidence is rare enough to select
+(round_trip sub-emit carries broad, if cross-pattern, signal), while
+open-chain evidence is everywhere (layering fills 482 of 500/day)
+and the strict min-conjunction zeroes volatile truth — layering
+catches nothing completable despite ranking 1,446 real scores. The
+motif to recalibrate first is layering_chain, not the background:
+loosen a term or soften the conjunction before touching thresholds.
