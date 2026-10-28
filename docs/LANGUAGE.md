@@ -149,7 +149,7 @@ Built-in crisp predicates and functions:
 
 | Form | Meaning |
 |---|---|
-| `p is time_ordered` | each step of path `p` happens strictly after the previous one |
+| `p is time_ordered` | each step of path `p` happens strictly after the previous one (required on path motifs: the walk enforces it regardless, so the text must say so) |
 | `span(p)` | last time − first time over path `p` |
 | `span(all)` | last time − first time over every edge in the binding (or group) |
 | `x != y`, `x == y` on node variables | identity comparison |

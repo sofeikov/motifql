@@ -107,6 +107,42 @@ def test_scoping_errors() -> None:
         " soft each e: e.gap is nosuchterm }")
 
 
+def test_unquantified_step_term_rejected() -> None:
+    # A bare `e.amount is high` over a path grades no step: E_PLAN at
+    # compile time, not a crash (or silent value) at score time.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "term high = ramp(900, 1000)\n"
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where e is time_ordered and span(e) <= 7d"
+            + " soft e.amount is high }"), "t")
+
+
+def test_time_ordered_required_on_path_motifs() -> None:
+    # The walk enforces time order structurally, so a motif that does not
+    # say so would mean more than it says.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where span(e) <= 7d }"), "t")
+
+
+def test_strict_span_bound_rejected() -> None:
+    # The walk applies the span bound inclusively; `<` would promise a
+    # strictness the executors cannot express.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+            + " where e is time_ordered and span(e) < 7d }"), "t")
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(parse_text(HEADER
+            + "motif t { match (x1:account) -[e1:transfer]-> (y1:account),"
+            + " (x1) -[e2:transfer]-> (y2:account),"
+            + " (x2:account) -[e3:transfer]-> (y1),"
+            + " (x2) -[e4:transfer]-> (y2)"
+            + " where x1 != x2 and y1 != y2 and span(all) < 1d }"), "t")
+
+
 def test_prev_outside_path_quantifier_rejected() -> None:
     assert "E_SCOPE" in _codes(
         "motif t { match (a:account) -[e:transfer]-> (b:account)"

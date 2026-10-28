@@ -201,6 +201,7 @@ def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
     closed = pat.nodes[0].var == pat.nodes[-1].var
     end_vars = (pat.nodes[0].var, pat.nodes[-1].var)
     account_vars = {n.var for n in pat.nodes}
+    _require_time_ordered(motif, edge.var)
     _validate_where(motif, edge.var, closed, end_vars, account_vars)
     _validate_soft(motif, edge.var, doc)
     prunable, deferred = _classify_soft(motif, edge.var)
@@ -211,6 +212,23 @@ def compile_motif(doc: Document, name: str, stats=None) -> PathPlan:
                         f"tighten `*{edge.min_hops}..{edge.max_hops}` or the window.")
     return PathPlan(motif.name, edge.var, closed, edge.min_hops, edge.max_hops,
                     window_s, prunable, deferred, motif.score, motif.emit, est)
+
+
+def _require_time_ordered(motif: Motif, edge_var: str) -> None:
+    """Path motifs run strictly time-ordered, so the text must say so.
+
+    The backward walk enforces ordering structurally, which means a motif
+    without the clause would silently mean more than it says. Requiring it
+    keeps the text honest for the repair loop.
+    """
+    for conjunct in _split_conjuncts(motif.where):
+        if (isinstance(conjunct, IsTerm) and conjunct.term == "time_ordered"
+                and isinstance(conjunct.base, Ref)
+                and conjunct.base.parts == (edge_var,) and not conjunct.args):
+            return
+    raise PlanError("E_PLAN", motif.name,
+                    f"no `{edge_var} is time_ordered` in `where`.",
+                    f"state `{edge_var} is time_ordered`: the walk enforces it anyway.")
 
 
 def _validate_where(motif: Motif, edge_var: str, closed: bool,
@@ -233,6 +251,10 @@ def _validate_where(motif: Motif, edge_var: str, closed: bool,
         elif isinstance(conjunct, Comparison) and conjunct.op in ("<=", "<"):
             if (isinstance(conjunct.left, Call) and conjunct.left.name == "span"
                     and isinstance(conjunct.right, (Dur, Num))):
+                if conjunct.op == "<":
+                    raise PlanError("E_PLAN", motif.name,
+                                    f"`span(...) < {_describe(conjunct.right)}` is strict, but the walk applies the bound inclusively.",
+                                    "use `<=`: a span exactly on the bound counts as inside.")
                 continue
         elif isinstance(conjunct, Comparison) and conjunct.op in ("==", "!="):
             left, right = conjunct.left, conjunct.right
@@ -284,6 +306,14 @@ def _validate_soft(motif: Motif, edge_var: str, doc: Document) -> None:
     for node in checks.walk(motif.soft):
         if isinstance(node, Call) and node.name == "span":
             span_args.update(id(a) for a in node.args)
+    # Term grades over a path edge are per-step: without a quantifier over
+    # the path variable there is no step to grade, so they are E_PLAN
+    # (a bare `e.amount is high` has no defined meaning, and previously
+    # crashed the evaluator instead).
+    quantified = set()
+    for node in checks.walk(motif.soft):
+        if isinstance(node, Quantified) and node.var == edge_var:
+            quantified.update(id(n) for n in checks.walk(node.body))
     for node in checks.walk(motif.soft):
         if id(node) in span_args:
             continue
@@ -302,6 +332,12 @@ def _validate_soft(motif: Motif, edge_var: str, doc: Document) -> None:
                             f"bare `{node.parts[0]}` has no degree in soft.",
                             "compare or grade a time, amount or gap field instead.")
         elif isinstance(node, IsTerm) and node.term not in ("time_ordered",):
+            if (isinstance(node.base, Ref) and len(node.base.parts) == 2
+                    and node.base.parts[0] == edge_var
+                    and id(node) not in quantified):
+                raise PlanError("E_PLAN", motif.name,
+                                f"`{'.'.join(node.base.parts)} is {node.term}` grades one step but sits outside any quantifier.",
+                                f"write `each {edge_var}: ...` (or some/most) around it, or grade an aggregate.")
             try:
                 resolve_term_args(node.term, node.args, term_defs)
             except ValueError as exc:
