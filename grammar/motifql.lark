@@ -40,7 +40,9 @@ match_clause: "match" pattern ("," pattern)*
 
 // group by s, d over m window 6h
 // group by c over x, y window 1d
-group_clause: "group" "by" NAME ("," NAME)* "over" NAME ("," NAME)* window?
+group_clause: "group" "by" key_list "over" member_list window?
+key_list: NAME ("," NAME)*
+member_list: NAME ("," NAME)*
 window: "window" DURATION
 
 where_clause: "where" expr
