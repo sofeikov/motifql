@@ -123,6 +123,20 @@ def test_fan_out_matches_brute_force() -> None:
     assert (again.found, again.score, again.witness) == (res.found, res.score, res.witness)
 
 
+def test_group_self_loop_member_is_included() -> None:
+    # Policy pin (Nov 1): unlike path witnesses (C1 excludes self-loops),
+    # group members include self-loop edges — planted truth itself
+    # contains one (GATHER-SCATTER 0048309->0048309), so excluding them
+    # would drop real members.
+    rows = [(0, "001", "S", "002", "R1", 100.0),
+            (30, "001", "S", "001", "S", 200.0),
+            (60, "001", "S", "002", "R2", 300.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    doc = _doc()
+    res = score_group(g, 2, compile_motif(doc, "fan_out"), libs_from_doc(doc))
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1, 2]
+
+
 def test_fan_out_fires_with_many_members() -> None:
     rows = [(i * 10, "001", "S", "002", f"R{i}", 100.0) for i in range(9)]
     g = TemporalGraph.from_transfers(_frame(rows))
@@ -404,3 +418,28 @@ def test_score_any_dispatches() -> None:
         plan = compile_motif(doc, name)
         assert score_any(g, pos, plan, libs).witness == \
             (score_group if name == "fan_out" else score_butterfly)(g, pos, plan, libs).witness
+
+
+def test_all_but_forgives_one_bad_member() -> None:
+    # Group mirror of the path test: one under-threshold member zeroes
+    # `each` but `all but 1` still fires at 1.0.
+    rows = [(0, "001", "S", "002", "R1", 100.0),
+            (10, "001", "S", "002", "R2", 100.0),
+            (20, "001", "S", "002", "R3", 100.0),
+            (30, "001", "S", "002", "R4", 10.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+
+    def _plan(quant: str):
+        doc = parse_text(
+            "motif t { match (a:account) -[e:transfer]-> (b:account)"
+            " group by a over b window 1d"
+            " having count(distinct b) >= 2"
+            f" soft {quant} b: e.amount >= 50 USD"
+            " score min emit when score >= 0.5 }")
+        return compile_motif(doc, "t"), libs_from_doc(doc)
+
+    plan, libs = _plan("each")
+    assert score_group(g, 3, plan, libs).top_score == pytest.approx(0.0)
+    plan, libs = _plan("all but 1")
+    res = score_group(g, 3, plan, libs)
+    assert res.found and res.top_score == pytest.approx(1.0)

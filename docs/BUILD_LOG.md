@@ -142,3 +142,16 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   any of 49 truth instances), structuring (demo, no truth).
 - Full unpruned RQ1 rerun with tuned motifs; reference pins updated
   (91/91 pass).
+
+## Nov 1 (cont.) — motif refits + `all but K`
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `docs/2026-11-02-refits.md`: layering recovered to ceiling (*5..8
+  reshape, 1/15→3/15, background 0/1600), scatter-fragment rejected
+  (floods; misses are 2-cycle orphans), inst 128 diagnosed
+  (time-disordered 7-cycle, round_trip ceiling 8/9).
+- Language: shipped `all but K` (grammar, checks, both evaluators,
+  LANGUAGE.md, 3 tests); killed graded-having (no new power),
+  pairing/B2 (overlap + engine cost), weights (no customer).
+- Self-loop group-inclusion pinned; no full replays (94/94 pass).

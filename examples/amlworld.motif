@@ -44,15 +44,20 @@ motif round_trip {
 // ---------------------------------------------------------------------------
 
 motif layering_chain {
-  match (a:account) -[e:transfer*3..6]-> (z:account)
+  match (a:account) -[e:transfer*5..8]-> (z:account)
   where e is time_ordered
-    and span(e) <= 4d
+    and span(e) <= 10d
     and a != z
-  soft  each e: e.gap is quickly
-    and each e: e.amount ~= prev.amount within 10%
+  soft  each e: e.gap is patient
+    and each e: e.amount ~= prev.amount within 25%
   score min
-  emit when score >= 0.7
+  emit when score >= 0.5
 }
+// NOTE (Nov 1 refit): length separates. Background has no long smooth
+// chains (1600-anchor sample: max score exactly 0.0), while the three
+// n>=5 train chains catch (1.0/0.86/0.61) — 3/15 is the ceiling, the
+// rest have <5 members. `quickly` bound truth gaps (p50 8h -> 0.35);
+// `within 10%` read truth's 5-11% wobble as ~0. Fragments stay out.
 
 // ---------------------------------------------------------------------------
 // 3. Fan-out: one account pays many distinct accounts.

@@ -191,10 +191,14 @@ def _eval_quant(node: Quantified, steps: list[int], graph, libs, tnorm: str) -> 
     if not per_step:
         # No defined bindings: universal quants hold vacuously, existential
         # ones fail. Witnesses always have >= 2 steps, so this is a backstop.
-        return 1.0 if node.quant in ("each", "all") else 0.0
+        return 1.0 if (node.quant in ("each", "all")
+                       or node.quant.startswith("all_but:")) else 0.0
     q = node.quant
     if q in ("each", "all"):
         return min(per_step)
+    if q.startswith("all_but:"):
+        k = int(q.split(":")[1])
+        return sorted(per_step)[k] if len(per_step) > k else 1.0
     if q == "some":
         return max(per_step)
     if q.startswith("at_least:"):

@@ -95,6 +95,7 @@ quantified: quantifier NAME ":" not_expr
 
 quantifier: "each"                         -> q_each
           | "all"                          -> q_all
+          | "all" "but" INT                -> q_all_but
           | "some"                         -> q_some
           | "most"                         -> q_most
           | "few"                          -> q_few
@@ -167,7 +168,7 @@ CURRENCY.2: /[A-Z]{3}(?![A-Za-z0-9_])/
 NUMBER: /\d+(\.\d+)?/
 INT: /\d+/
 // Reserved words are excluded from NAME so they never parse as references.
-NAME: /(?!(all|and|at|distinct|each|false|few|is|least|most|not|or|some|true|within)(?![A-Za-z0-9_]))[a-z_][A-Za-z0-9_]*/
+NAME: /(?!(all|and|at|but|distinct|each|false|few|is|least|most|not|or|some|true|within)(?![A-Za-z0-9_]))[a-z_][A-Za-z0-9_]*/
 
 COMMENT: /\/\/[^\n]*/
 

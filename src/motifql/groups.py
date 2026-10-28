@@ -258,11 +258,15 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str) -> tuple[float, l
             continue
         hits.append(d)
     if not hits:
-        deg = 1.0 if node.quant in ("each", "all") else 0.0
+        vacuous = node.quant in ("each", "all") or node.quant.startswith("all_but:")
+        deg = 1.0 if vacuous else 0.0
         return deg, [(f"{_quant_label(node.quant)} {node.var}: {_label(node.body)}", deg, None)]
     q = node.quant
     if q in ("each", "all"):
         deg = min(hits)
+    elif q.startswith("all_but:"):
+        k = int(q.split(":")[1])
+        deg = sorted(hits)[k] if len(hits) > k else 1.0
     elif q == "some":
         deg = max(hits)
     elif q.startswith("at_least:"):
@@ -347,6 +351,8 @@ def _quant_label(q: str) -> str:
         return "@" + q.split(":")[1]
     if q.startswith("at_least:"):
         return "at least " + q.split(":")[1]
+    if q.startswith("all_but:"):
+        return "all but " + q.split(":")[1]
     return q
 
 

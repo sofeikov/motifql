@@ -88,6 +88,10 @@ def test_fuzzy_stays_out_of_where() -> None:
         " group by a over b window 1d"
         " having count(distinct b) >= 2"
         " where span(all) <= 1d }") == []
+    # all but K is fuzzy-only (crisp body, so only the quantifier errors).
+    assert "E_CRISP" in _codes(
+        "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        " where span(e) <= 7d and all but 1 e: e.amount >= 0 USD }")
 
 
 def test_scoping_errors() -> None:
@@ -170,7 +174,7 @@ def test_round_trip_plan() -> None:
 
 def test_layering_chain_plan_is_open() -> None:
     plan = compile_motif(_doc(), "layering_chain")
-    assert not plan.closed and (plan.min_hops, plan.max_hops) == (3, 6)
+    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 8)
     assert len(plan.prunable) == 2
 
 
