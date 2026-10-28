@@ -179,6 +179,37 @@ def test_gather_witness_matches_brute_force() -> None:
     assert res.truncated is False
 
 
+def test_scatter_pairs_older_leg1_when_newest_is_stale() -> None:
+    # H6: per mid, the most recent leg1 strictly before leg2 pairs up.
+    # M1's t=55 leg1 postdates its t=50 leg2, but the t=10 leg1 is still
+    # a valid pair — previously the mid was dropped and the group missed.
+    g = TemporalGraph.from_transfers(_frame([
+        (10, "001", "S", "002", "M1", 100.0), (20, "001", "S", "002", "M2", 100.0),
+        (50, "002", "M1", "003", "D", 100.0), (55, "001", "S", "002", "M1", 100.0),
+        (60, "002", "M2", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 4, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.found and res.top_score == pytest.approx(0.5)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [0, 1, 2, 4]
+
+
+def test_gather_drops_payout_before_any_collection() -> None:
+    # H7: `p.time > g.time` is enforced — a payout preceding every
+    # collection cannot count as redistribution.
+    g = TemporalGraph.from_transfers(_frame([
+        (5, "002", "C", "003", "Y0", 100.0),
+        (10, "001", "X1", "002", "C", 100.0), (20, "001", "X2", "002", "C", 100.0),
+        (30, "001", "X3", "002", "C", 100.0),
+        (40, "002", "C", "003", "Y1", 100.0), (45, "002", "C", "003", "Y2", 100.0),
+        (50, "002", "C", "003", "Y3", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 6, compile_motif(doc, "gather_scatter"), libs_from_doc(doc))
+    assert res.found and res.top_score == pytest.approx(1.0)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [1, 2, 3, 4, 5, 6]
+
+
 # -- butterfly -------------------------------------------------------------
 
 def test_butterfly_finds_core_and_ignores_decoy() -> None:
@@ -195,6 +226,57 @@ def test_butterfly_finds_core_and_ignores_decoy() -> None:
     # Anchor that cannot complete a core: the decoy edge.
     miss = score_butterfly(g, 1, plan, libs_from_doc(doc))
     assert not miss.found
+
+
+def _butterfly_doc(soft: str | None) -> object:
+    text = (
+        "term soon = trapezoid(0h, 0h, 6h, 48h)\n"
+        "term patient = trapezoid(0h, 0h, 24h, 120h)\n"
+        "motif bf { match (x1:account) -[e1:transfer]-> (y1:account),"
+        " (x1) -[e2:transfer]-> (y2:account),"
+        " (x2:account) -[e3:transfer]-> (y1),"
+        " (x2) -[e4:transfer]-> (y2)"
+        " where x1 != x2 and y1 != y2 and span(all) <= 5d"
+    )
+    if soft is not None:
+        text += f" soft {soft}"
+    return parse_text(text + " score min emit when score >= 0.6 }")
+
+
+def _butterfly_frame() -> object:
+    # 2x2 core with a 72h span: soon(72h) = 0.0, patient(72h) = 0.5.
+    return _frame([
+        (0, "001", "X1", "002", "Y1", 50.0),
+        (60, "001", "X1", "002", "Y2", 50.0),
+        (120, "001", "X2", "002", "Y1", 50.0),
+        (4320, "001", "X2", "002", "Y2", 50.0),
+    ])
+
+
+def test_butterfly_rejects_non_span_soft() -> None:
+    # H8: the executor only grades span(all); anything else must E_PLAN
+    # instead of being silently scored as `soon`.
+    with pytest.raises(PlanError, match="E_PLAN"):
+        compile_motif(_butterfly_doc("e1.amount ~= e2.amount within 10%"), "bf")
+
+
+def test_butterfly_grades_named_span_term() -> None:
+    # H8: the core is graded by the term the motif names, not hardcoded
+    # `soon` (which would score this 72h span 0.0).
+    doc = _butterfly_doc("span(all) is patient")
+    g = TemporalGraph.from_transfers(_butterfly_frame())
+    res = score_butterfly(g, 3, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert not res.found  # below the 0.6 emit
+
+
+def test_butterfly_without_soft_scores_one() -> None:
+    # H8: with no soft clause the score is 1 (LANGUAGE §4.6) — the old
+    # code still graded by a global `soon` term when one was defined.
+    doc = _butterfly_doc(None)
+    g = TemporalGraph.from_transfers(_butterfly_frame())
+    res = score_butterfly(g, 3, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.found and res.score == pytest.approx(1.0)
 
 
 def test_score_any_dispatches() -> None:

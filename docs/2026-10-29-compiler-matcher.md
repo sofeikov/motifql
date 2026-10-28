@@ -115,3 +115,22 @@ structuring_fan_in), the bipartite_butterfly multi-pattern matcher, and
 the evaluation harness (RQ1 tables at fixed alert budgets, holdout split).
 Sub-emit ranking fidelity under pruning holds at 99.0–99.95% on the 2K
 random sample; the residual is sub-emit by construction.
+
+## 6. Correction (Oct 31): self-loop anchors
+
+The §3 rows inherit the Oct 28 self-loop bug (see that report's §8):
+bogus 2-self-loop witnesses also dominated the fuzzy fires. The exact
+rows are corrected there (41,310 → 2,255; 673,462 → 660,233). Fuzzy
+re-measured on the current (recalibrated) motifs, train, 16 workers:
+
+| motif | fires (/day) | mean expansions | truncated | wall |
+|---|---|---|---|---|
+| round_trip fuzzy @0.6 | 113 (22.6) | 42.5 | 0% | 21s |
+| layering_chain fuzzy @0.7 | 17 (3.4) | 24.2 | 0% | 13s |
+
+Pruning still saves 39×/32× expansions on the 2K sample with exact
+found-agreement and 0.9995 top-score agreement — the soundness story is
+intact. Train CYCLE hits at emit: 102 (0.72), 142 (0.90), 159 (0.92).
+The §4 "8k/day background" concern inverts for `round_trip`: background
+is now 23/day and no threshold fills a 500/day budget (threshold 0.0).
+Holdout/RQ1 readings are corrected in the Oct 30 report.

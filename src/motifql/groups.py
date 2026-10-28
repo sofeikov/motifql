@@ -480,11 +480,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
         if len(out_s) > DEFAULT_MAX_FANOUT:
             out_s = out_s[-DEFAULT_MAX_FANOUT:]
             truncated = True
-        mids: dict[int, int] = {}
+        mids: dict[int, list[int]] = {}
         for e in sorted(out_s.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
-            mids[int(graph.to[int(e)])] = int(e)
+            mids.setdefault(int(graph.to[int(e)]), []).append(int(e))
         members: dict[int, tuple[int, int]] = {}
-        for mid, leg1 in mids.items():
+        for mid, leg1s in mids.items():
             if mid == d_node:
                 continue
             if mid == m0:
@@ -493,8 +493,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
                 leg2 = leg2_by_mid[mid]
             else:
                 continue
-            t1, t2 = int(graph.times[leg1]), int(graph.times[leg2])
-            if not t2 > t1:
+            t2 = int(graph.times[leg2])
+            # Most recent leg1 strictly before the chosen leg2: an older
+            # pair stays valid when a newer leg1 postdates leg2.
+            leg1 = next((e for e in reversed(leg1s) if int(graph.times[e]) < t2), None)
+            if leg1 is None:
                 continue
             members[mid] = (int(leg1), int(leg2))
         if m0 not in members and s in leg1_by_sender:
@@ -561,6 +564,13 @@ def _score_gather(graph, anchor_pos: int, plan, libs) -> GroupResult:
         truncated = True
     g_list = [int(e) for e in g_edges.tolist()]
     p_list = [int(e) for e in p_edges.tolist()] + [int(anchor_pos)]
+    if g_list:
+        # Enforce `p.time > g.time`: a payout counts only if some
+        # collection precedes it (join semantics over the guard). The
+        # anchor is itself a p edge later than every g edge, so it always
+        # qualifies; every g edge trivially has a later p edge.
+        earliest_g = min(int(graph.times[e]) for e in g_list)
+        p_list = [e for e in p_list if int(graph.times[e]) > earliest_g]
     expansions = len(g_list) + len(p_list)
     x_nodes = sorted({int(graph.frm[e]) for e in g_list})
     y_nodes = sorted({int(graph.to[e]) for e in p_list})
@@ -640,7 +650,14 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
             truncated = True
             break
     term_defs, _ = libs
-    soon_def = term_defs.get("soon")
+    if plan.soft is None:
+        grade = None
+    else:
+        # Validated by the planner: one `span(all) is <term>` condition.
+        soft = plan.soft
+        grade = (term_defs[soft.term],
+                 resolve_term_args(soft.term, soft.args, term_defs),
+                 soft.negated)
     best: tuple[float, list[int]] | None = None
     for x2, x2_to_b in x2_by_pos.items():
         if x2 not in cross:
@@ -653,11 +670,13 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
             if min(int(graph.times[e]) for e in legs) < anchor_t - window_s:
                 continue
             span = float(anchor_t - min(int(graph.times[e]) for e in legs))
-            if soon_def is not None:
-                from motifql.degrees import resolve_term_args as _rta
-                deg = term_degree(soon_def.shape, _rta("soon", (), term_defs), span)
-            else:
+            if grade is None:
                 deg = 1.0
+            else:
+                tdef, targs, negated = grade
+                deg = term_degree(tdef.shape, targs, span)
+                if negated:
+                    deg = 1.0 - deg
             witness = [x2_to_b, a_to_y2, x2_to_y2, int(anchor_pos)]
             if best is None or deg > best[0]:
                 best = (deg, witness)
@@ -666,10 +685,6 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
     deg, witness = best
     label = _label(plan.soft) if plan.soft is not None else "score"
     degs = [(label, deg, None)]
-    if plan.soft is not None:
-        # Full soft eval over the winning witness for explanation parity:
-        # span(all) is the only v0-covered butterfly soft form.
-        pass
     return _finish(plan.name, witness, graph, deg, degs, truncated, expansions, plan.emit)
 
 

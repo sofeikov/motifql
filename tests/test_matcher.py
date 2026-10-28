@@ -124,6 +124,40 @@ def test_chain_cannot_pass_through_receiver() -> None:
     assert not match(g, 2, LAYERING_CHAIN).found
 
 
+def test_self_loop_anchor_never_fires() -> None:
+    # C1: a self-loop anchor cannot end a simple-path witness, open or
+    # closed — the edge before the anchor already ends where it starts.
+    # The two self-loops alone would previously "close" a round trip.
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "S", "001", "S"),
+                (10, "001", "S", "001", "S"),
+            ]
+        )
+    )
+    assert not match(g, 1, ROUND_TRIP).found
+    assert not match(g, 1, LAYERING_CHAIN).found
+
+
+def test_self_loop_anchor_misses_beside_a_real_cycle() -> None:
+    # Guard against over-blocking: the cycle still fires at its own
+    # anchor while the self-loop anchor beside it stays silent.
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "A", "002", "B"),
+                (10, "002", "B", "003", "C"),
+                (20, "003", "C", "001", "A"),
+                (30, "001", "S", "001", "S"),
+            ]
+        )
+    )
+    assert match(g, 2, ROUND_TRIP).found
+    assert not match(g, 3, ROUND_TRIP).found
+    assert not match(g, 3, LAYERING_CHAIN).found
+
+
 def _brute_force(graph: TemporalGraph, anchor_pos: int, motif) -> bool:
     """Exhaustive simple-path enumeration without caps: oracle for match.
 
@@ -133,6 +167,8 @@ def _brute_force(graph: TemporalGraph, anchor_pos: int, motif) -> bool:
     anchor_t = int(graph.times[anchor_pos])
     sender = int(graph.frm[anchor_pos])
     receiver = int(graph.to[anchor_pos])
+    if sender == receiver:
+        return False  # mirrors _walk: no simple-path witness ends here
     window_start = anchor_t - motif.window_s
 
     def dfs(node: int, t_bound: int, depth: int, visited: set[int]) -> bool:

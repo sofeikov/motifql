@@ -85,3 +85,22 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   updated for the new plan types.
 - `docs/2026-10-30-group-eval.md`: this day's report, including the
   zero-fill degeneracy warning for fixed-budget recall of strict motifs.
+
+## Oct 31 — correctness review fixes (critical + high)
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- Issue #6 triage: multi-agent review of the Oct 27-30 rush found 1
+  critical + 8 high + 7 medium correctness bugs; this pass fixes the
+  critical and highs.
+- `src/motifql/matcher.py`: self-loop anchors return immediately (no
+  simple-path witness ends there); test oracle fixed identically.
+- `src/motifql/planner.py`: amount-only prunable classification, min of
+  span bounds, single-hop scatter/gather legs, butterfly soft restricted
+  to `span(all) is <term>`.
+- `src/motifql/parser.py`: duplicate clauses rejected.
+- `src/motifql/checks.py`: term-domain unit check (duration/money/number).
+- `src/motifql/groups.py`: scatter older-leg1 pairing, gather
+  `p.time > g.time` guard, butterfly named-term grading (soft-less = 1.0).
+- Regression tests per fix (75/75 pass); full bench, scored-replay and
+  RQ1 reruns with dated correction sections in the Oct 28-30 reports.

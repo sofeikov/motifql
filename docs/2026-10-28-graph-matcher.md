@@ -131,3 +131,26 @@ streaming code is built today.
 Compiler (AST, checks, planner) + general path matcher with degrees,
 pruning and witnesses; grammar frozen. The 7-member cycle and the
 single-member instances stay as boundary test cases for bound handling.
+
+## 8. Correction (Oct 31): self-loop anchors
+
+The Oct 28 numbers above over-count: on a self-loop anchor the
+`visited = {sender, receiver}` set collapses to one account and the
+closing exception accepts the bogus witness `[S->S, S->S]`, so ~39K of
+the 41,310 `round_trip` fires were 2-self-loop artifacts (fix:
+`matcher.py` returns immediately on self-loop anchors — no simple-path
+witness with `min_hops >= 2` can end there — plus a matching oracle fix
+and regression tests). Rerun on the same split/workers:
+
+| motif | wall | anchors/s | p50 | p99 | fires (/day) | truncated | mean expansions |
+|---|---|---|---|---|---|---|---|
+| round_trip | 821s | 2,267 | 742µs | 103ms | 2,255 (451) | 0.51% | 1,723 |
+| layering_chain | 5.9s | 318,064 | 11µs | 815µs | 660,233 (132,047) | 0% | 6.8 |
+
+Recall is unchanged (CYCLE 8/9, RANDOM 2/4 — no member transfer is a
+self-loop, so no bogus witness reaches the 2/3 overlap). What changes
+in §4: cycles complete on 0.12% of anchors, not 2.2% — the "exact
+matching over-fires" claim was 18× overstated for cycles (it stands
+for chains at ~35%). The wall time is run-to-run variance on the
+shared box (the fix strictly removes work). CYCLE chance recall falls
+to ~0.0 with the fire rate.
