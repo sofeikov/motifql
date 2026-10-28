@@ -54,14 +54,15 @@ MOTIFS: dict[str, PathMotif] = {
 _GRAPH: TemporalGraph | None = None
 
 
-ShardResult = tuple[npt.NDArray[np.float64], int, int, int]
-"""Per-shard tally: latencies (us), fires, truncated anchors, expansions."""
+ShardResult = tuple[npt.NDArray[np.int64], npt.NDArray[np.float64], int, int, int]
+"""Per-shard tally: positions (for realignment), latencies (us), fires,
+truncated anchors, expansions."""
 
 
 def _score_shard(
     args: tuple[npt.NDArray[np.int64], PathMotif],
 ) -> ShardResult:
-    """Score one anchor shard; runs in a worker process."""
+    """Score one anchor shard; returns positions first for realignment."""
     positions, motif = args
     assert _GRAPH is not None
     lat_us = np.empty(len(positions), dtype=np.float64)
@@ -75,7 +76,7 @@ def _score_shard(
         found += res.found
         trunc += res.truncated
         expansions += res.expansions
-    return lat_us, found, trunc, expansions
+    return positions, lat_us, found, trunc, expansions
 
 
 def main(
@@ -115,28 +116,33 @@ def main(
                  "serial" if workers <= 1 else f"{workers} workers")
         t_start = time.perf_counter()
         if workers <= 1:
-            lat_us, found, trunc, expansions = _score_shard((anchor_pos, motif))
+            _, lat_us, found, trunc, expansions = _score_shard((anchor_pos, motif))
         else:
             # Round-robin shards, oversubscribed: hub senders cluster in time,
-            # so contiguous shards would idle-balance the pool.
+            # so contiguous shards would idle-balance the pool. Shards finish
+            # out of order, so latencies are realigned to anchor order.
             n_shards = 8 * workers
             shards = [anchor_pos[i::n_shards] for i in range(n_shards)]
             shards = [s for s in shards if len(s)]
             ctx = mp.get_context("fork")
+            key_parts: list[np.ndarray] = []
             lat_parts: list[np.ndarray] = []
             found, trunc, expansions = 0, 0, 0
             with ctx.Pool(processes=workers) as pool:
-                for done, (lat, f, t, e) in enumerate(
+                for done, (pos, lat, f, t, e) in enumerate(
                     pool.imap_unordered(_score_shard, [(s, motif) for s in shards]),
                     start=1,
                 ):
+                    key_parts.append(pos)
                     lat_parts.append(lat)
                     found += f
                     trunc += t
                     expansions += e
                     if done % workers == 0:
                         log.info("  ... %d/%d shards", done, len(shards))
-            lat_us = np.concatenate(lat_parts)
+            back = np.searchsorted(anchor_pos, np.concatenate(key_parts))
+            lat_us = np.empty(len(anchor_pos), dtype=np.float64)
+            lat_us[back] = np.concatenate(lat_parts)
         wall = time.perf_counter() - t_start
         n_days = (tr1 - tr0).days + 1
         p50, p99 = np.percentile(lat_us, [50, 99])
