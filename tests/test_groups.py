@@ -436,10 +436,10 @@ def test_butterfly_grades_named_span_term() -> None:
 
 
 def test_butterfly_skips_truncated_partner_without_discarding_rest(monkeypatch) -> None:
-    # M4: cross entries are built in id order but scored in time order,
-    # so under truncation a missing key must `continue`, not `break` and
-    # discard later partners that do have entries. B (early, truncated
-    # out) precedes A (late, complete core) in scoring order.
+    # M4: under truncation a missing cross key must `continue`, not
+    # `break` and discard later partners that do have entries. B
+    # (early, truncated out) precedes A (late, complete core) in
+    # scoring order.
     monkeypatch.setattr("motifql.groups.DEFAULT_MAX_EXPANSIONS", 4)
     g = TemporalGraph.from_transfers(_frame([
         (0, "001", "A", "002", "ZZ", 50.0),
@@ -453,6 +453,27 @@ def test_butterfly_skips_truncated_partner_without_discarding_rest(monkeypatch) 
     res = score_butterfly(g, 5, compile_motif(doc, "bf"), libs_from_doc(doc))
     assert res.truncated
     assert res.found and res.score == pytest.approx(1.0)
+
+
+def test_butterfly_truncation_cuts_oldest_partners_first(monkeypatch) -> None:
+    # #15: cross entries were built in node-id order, so truncation cut
+    # the highest ids (newest accounts) first. Like every other cap,
+    # the oldest partners go first now. Budget admits one cross entry:
+    # O (id 0, stale core, span 50h) vs N (id 3, fresh core) — the
+    # fresh core must survive.
+    monkeypatch.setattr("motifql.groups.DEFAULT_MAX_EXPANSIONS", 5)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "O", "002", "Y1", 50.0),
+        (10, "001", "O", "002", "Y2", 50.0),
+        (2900, "001", "N", "002", "Y1", 50.0),
+        (2910, "001", "N", "002", "Y2", 50.0),
+        (2920, "001", "X1", "002", "Y2", 50.0),
+        (3000, "001", "X1", "002", "Y1", 50.0),
+    ]))
+    doc = _butterfly_doc("span(all) is soon")
+    res = score_butterfly(g, 5, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.truncated
+    assert res.found and res.top_score == pytest.approx(1.0)
 
 
 def test_butterfly_without_soft_scores_one() -> None:

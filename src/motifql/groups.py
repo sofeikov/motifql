@@ -773,7 +773,12 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False,
         if int(graph.frm[e]) != a_node:
             x2_edges.setdefault(int(graph.frm[e]), []).append(e)
     expansions = len(out_a) + len(in_b) + 1
-    x2_nodes = sorted(x2_edges)
+    # Most-recent-first x2 order, like every other cap: on budget
+    # truncation the oldest partners are cut, not the highest node ids
+    # (#15: ids track first-seen account age, cutting newest first).
+    x2_nodes = sorted(x2_edges,
+                      key=lambda x: max(int(graph.times[e]) for e in x2_edges[x]),
+                      reverse=True)
     # Per-x2 outgoing map (capped): which y2 does x2 pay within the window?
     cross: dict[int, dict[int, list[int]]] = {}
     for x2 in x2_nodes:
@@ -821,8 +826,9 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False,
     earliest = anchor_t - window_s
     for x2, x2_to_b_list in x2_edges.items():
         if x2 not in cross:
-            # Truncated out of the cross map (built in id order, scored in
-            # time order): skip it, not everything after it.
+            # Truncated out of the cross map: skip it, not everything
+            # after it (scoring order is oldest-first, the build keeps
+            # the most recent, so skips land up front).
             continue
         for y2, a_to_y2_list in y2_edges.items():
             x2_to_y2_list = cross[x2].get(y2)
