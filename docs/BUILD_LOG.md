@@ -180,3 +180,40 @@ from a post-#6 review of main with independent repros:
   butterfly-vs-brute-force differential (150 graphs x anchors x 3 term
   shapes, exact). Oct 30 §8 marked stale pending an RQ1 rerun (F1/F2
   move those numbers; no long batches run).
+
+## Nov 3 — Oct 31 stage: Spark compiler + RQ4 first numbers
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark),
+overnight:
+
+- `src/motifql/models/`: Spark client (Model API, prompt-hash disk
+  cache, retries incl. flaky content-filter 400s) + §7.1 repair loop
+  (error feedback, sanity fire-rate feedback, crashes-as-feedback).
+- `eval/rq4_items.py`: 50-item English set with verified references
+  (all compile; committed test pins that).
+- `eval/rq4.py`: three-arm harness (repair / repair_nosanity /
+  oneshot), train-sample witness Jaccard, resume + reference cache.
+- `docs/2026-11-03-rq4.md`: first numbers. Compile-error feedback
+  works (3/3 E_PLAN fixes, nosanity 47/47); sanity-rate feedback
+  HURTS (repair Jaccard 0.641 vs 0.954 — rare-but-correct motifs get
+  "loosen"ed into wrong ones); provider content filter flaky on 3
+  benign items. 12 tests (112/112 pass).
+
+## Nov 3 (cont.) — RQ4 review corrections (PR #13)
+
+Claude review of the RQ4 writeup, all verified and addressed:
+
+- Finding 2 rewritten: degradations are 11 tighten / 5 loosen (not
+  mostly loosen); sanity flags 32/50 correct references, so fixed
+  thresholds are dropped as a follow-up direction (asymmetric fix
+  would keep the tighten damage). Sanity slice documented (Sep 3-4
+  head, subset of eval).
+- Numbers relabeled: Jaccard over all rows (oneshot 0.888, repair
+  0.629, nosanity 0.957); scatter-gap was a cached cut-off, not a
+  give-up (repair 47/47); fanout-most-big $1M cap fixed in the
+  reference (now 1.00 everywhere).
+- Code: empty/cut-off replies retried, never cached (atomic writes,
+  corrupt-entry and malformed-200 tolerance); repair falls back to
+  the last compiling candidate; ref cache keyed by sample (+rewrite
+  deletion bug fixed); resume keyed by run provenance; --fresh redoes
+  only requested arms. 4 more tests (116/116 pass).
