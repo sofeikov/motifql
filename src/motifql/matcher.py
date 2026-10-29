@@ -278,12 +278,14 @@ class ScoredResult:
 
 
 def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
-          prune: bool = True) -> ScoredResult:
+          prune: bool = True, crisp: bool = False) -> ScoredResult:
     """Score one anchor against a path plan, returning the best witness.
 
     Prunable group degrees accumulate bottom-up as the walk extends; their
     running combination is an upper bound on any completion, so a branch is
     cut once it drops below the best score so far (or the emit threshold).
+    With crisp=True every leaf is support-thresholded (RQ2 exact arm);
+    crisp degrees still bound their completions, so pruning stays sound.
     """
     terms, _ = libs
     tnorm = plan.score_tnorm
@@ -311,7 +313,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
         a_c = float(graph.amount[cand_pos])
         out: list[float] = []
         for group in plan.prunable:
-            ds = [step_degrees(a, t_p - t_c, a_p, a_c, terms) for a in group.atoms]
+            ds = [step_degrees(a, t_p - t_c, a_p, a_c, terms, crisp) for a in group.atoms]
             ds = [d for d in ds if d is not None]
             out.append(_combine(ds, tnorm) if ds else 1.0)
         return out
@@ -346,7 +348,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
             hits: list[tuple[int, float]] = []
             for i in range(1, len(witness)):
                 ds = [step_degrees(a, times[i] - times[i - 1], amounts[i],
-                                   amounts[i - 1], terms) for a in group.atoms]
+                                   amounts[i - 1], terms, crisp) for a in group.atoms]
                 ds = [d for d in ds if d is not None]
                 if ds:
                     hits.append((i, _combine(ds, tnorm)))
@@ -358,7 +360,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
             parts.append(deg)
             degs.append((group.label, deg, weakest))
         if plan.deferred is not None:
-            ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm)
+            ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm, crisp)
             parts.append(ddef)
             degs.append(("soft (deferred)", ddef, None))
         s = _combine(parts, tnorm)

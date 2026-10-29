@@ -199,6 +199,36 @@ overnight:
   "loosen"ed into wrong ones); provider content filter flaky on 3
   benign items. 12 tests (112/112 pass).
 
+## Nov 4 — Nov 1 stage: RQ2 fuzzy-vs-exact + discovery agent
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `crisp=True` exact arm (`degrees.crisp_degree`, threaded through
+  `matcher.score`, all group executors, butterfly): support-boundary
+  thresholding of soft leaves, combination unchanged; 6 tests
+  (122/122 pass with the RQ2 set).
+- `eval/rq2.py`: holdout fuzzy-vs-crisp at fixed budgets with a
+  per-run crisp differential + two-phase screen (crisp pruned full,
+  fuzzy only on crisp-positive/truncated — exact on completed
+  anchors; unpruned *5..8 truncates 5% and misses pruned-found
+  witnesses). Finding: fuzzy wins at tight budgets 3/3 motifs
+  (transfer @50: 12v7, 19v2, 63v44; CYCLE instance 3/3 v 2/3).
+- `eval/perturb.py` (+threshold tests): threshold recall structurally
+  favors crisp (kept as a negative); `--budget` mode shows the
+  ranking edge persists through ±20%/×2 evasion (level 0 reproduces
+  RQ2 exactly). System finding: naive max-union collapses
+  (uncalibrated fan 1.0s bury path truth); min-rank union wins ~4x
+  @50 — rank combination now a documented requirement.
+- `src/motifql/models/discovery.py` + `eval/discover.py`: train-only
+  SHOW/TRY/PROPOSE/DONE loop with a bg-fire gate (6 stub tests).
+  Two live FAN runs: competent exploration, no pass — probed
+  precision wall (37% background win≥2; singletons unrecoverable).
+  Catch matrix: cross-pattern covering is rampant (SG 0/7 missed).
+- LI-small replication: same direction 3/3 (6/6 cells @50).
+- `docs/2026-11-04-rq2-discovery.md`: full report with the bounded
+  value verdict (ranking edge + evasion persistence + discovery
+  diagnosis with specified path).
+
 ## Nov 3 (cont.) — RQ4 review corrections (PR #13)
 
 Claude review of the RQ4 writeup, all verified and addressed:

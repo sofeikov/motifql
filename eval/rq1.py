@@ -52,6 +52,8 @@ MOTIFS = ["round_trip", "layering_chain", "fan_out", "fan_in",
 _GRAPH: TemporalGraph | None = None
 _PLAN = None
 _LIBS = None
+_PRUNE = False
+_CRISP = False
 
 
 def _score_job(args: tuple[npt.NDArray[np.int64], bool]
@@ -68,8 +70,10 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
     trunc = np.empty(n, dtype=bool)
     for i, pos in enumerate(positions.tolist()):
         # Unpruned: RQ1 ranks by the best witness even below emit, and
-        # pruning zeroes every sub-emit top_score.
-        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS, prune=False)
+        # pruning zeroes every sub-emit top_score. (RQ2 sets the
+        # globals for its crisp arm; RQ1 defaults are unchanged.)
+        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS,
+                        prune=_PRUNE, crisp=_CRISP)
         top[i] = res.top_score
         found[i] = res.found
         exps[i] = res.expansions
@@ -153,8 +157,9 @@ def main(
         log.info("  %s: %s window=%.0fs emit=%.2f est=%.1f",
                  m, type(p).__name__, p.window_s, p.emit, p.est_expansions)
 
-    global _GRAPH, _PLAN, _LIBS
+    global _GRAPH, _PLAN, _LIBS, _PRUNE, _CRISP
     _GRAPH, _LIBS = graph, libs
+    _PRUNE, _CRISP = False, False
 
     log.info("[3/5] replaying (top_score ranking) over train + holdout")
     scored: dict[str, dict[str, npt.NDArray]] = {}
