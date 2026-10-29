@@ -84,6 +84,10 @@ def _replay(positions: npt.NDArray[np.int64], workers: int,
     if workers <= 1:
         _, *out = _score_job((positions, True))
     else:
+        # Zero anchors: no scoring and no side effects, but the compiled
+        # kernels are loaded here once and inherited by every forked
+        # worker, instead of each worker loading them again (~0.6 s).
+        _score_job((positions[:0], True))
         n_shards = 8 * workers
         shards = [positions[i::n_shards] for i in range(n_shards)]
         shards = [s for s in shards if len(s)]
@@ -209,6 +213,9 @@ def main(
     hold_base = (df.filter(pl.col("day").is_between(ho0, ho1))
                  .head(len(hold_pos))
                  .join(labels_one, on="transfer_id", how="left", maintain_order="left"))
+    # The tie-break hash depends only on transfer_id: compute it once here
+    # rather than once per motif (rank_per_day reuses the column).
+    hold_base = evaluate.with_tiebreak(hold_base)
     # Anchor order is the frame order filtered to holdout days; row positions
     # below index into the holdout replay arrays in that same order.
     tr_rows, inst_rows = [], []

@@ -70,6 +70,9 @@ def _replay(positions: npt.NDArray[np.int64], prune: bool, workers: int,
     if workers <= 1:
         _, *out = _score_job((positions, prune))
     else:
+        # Zero anchors: loads the compiled kernels once, before the fork
+        # (no scoring, no side effects), so workers do not each reload them.
+        _score_job((positions[:0], prune))
         n_shards = 8 * workers
         shards = [positions[i::n_shards] for i in range(n_shards)]
         shards = [s for s in shards if len(s)]

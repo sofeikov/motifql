@@ -23,9 +23,30 @@ def _tiebreak_key(transfer_ids: list[int]) -> list[int]:
     by transfer_id leaks the label into fixed-budget recall. A keyed
     hash keeps the ranking fully deterministic while carrying no label
     signal.
+
+    The value is the first 8 digest bytes of md5("<seed>:<tid>"), read
+    big-endian (== int(hexdigest[:16], 16)); the seed prefix is hashed
+    once per call and copied per id.
     """
-    return [int(hashlib.md5(f"{_TIEBREAK_SEED}:{t}".encode()).hexdigest()[:16], 16)
-            for t in transfer_ids]
+    prefix = hashlib.md5(f"{_TIEBREAK_SEED}:".encode())
+    copy, from_bytes = prefix.copy, int.from_bytes
+    out = []
+    for t in transfer_ids:
+        h = copy()
+        h.update(str(t).encode())
+        out.append(from_bytes(h.digest()[:8], "big"))
+    return out
+
+
+def with_tiebreak(frame: pl.DataFrame) -> pl.DataFrame:
+    """`frame` plus the `_hkey` tie-break column rank_per_day needs.
+
+    For callers that rank the same rows under several score columns in
+    one run: the hash (about 0.35 us per transfer) is computed once and
+    travels with its rows, so it cannot fall out of alignment.
+    """
+    return frame.with_columns(
+        pl.Series("_hkey", _tiebreak_key(frame["transfer_id"].to_list()), dtype=pl.UInt64))
 
 
 def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None,
@@ -34,11 +55,10 @@ def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None,
     key (breaks the ties that saturate at 1.0), then a keyed hash of
     the transfer id, then transfer id asc for a total order.
     Fully deterministic: no input-order dependence anywhere in the key,
-    and no label signal in the tie-break.
+    and no label signal in the tie-break. Reuses an `_hkey` column from
+    with_tiebreak when present; the output never carries it.
     """
-    keyed = scored.with_columns(
-        pl.Series("_hkey", _tiebreak_key(scored["transfer_id"].to_list()),
-                  dtype=pl.UInt64))
+    keyed = scored if "_hkey" in scored.columns else with_tiebreak(scored)
     keys, desc = (["day", "score", "_hkey", "transfer_id"],
                   [False, True, False, False])
     if secondary_col is not None:
@@ -113,6 +133,7 @@ def recall_at_budgets(hold_base: pl.DataFrame, members: pl.DataFrame,
     tagged with a `key` column.
     """
     tr_rows, inst_rows = [], []
+    hold_base = with_tiebreak(hold_base)  # once for every score column
     for key, top in scores.items():
         hold = rank_per_day(hold_base.with_columns(pl.Series("score", top)))
         tr_rows.append(transfer_recall(hold, budgets)

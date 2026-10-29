@@ -60,6 +60,27 @@ def test_secondary_direction_orders_ties() -> None:
     assert asc.filter(pl.col("transfer_id") == 0)["rank"].item() == 1
 
 
+def test_tiebreak_key_is_the_pinned_md5_formula() -> None:
+    import hashlib
+
+    from eval.evaluate import _TIEBREAK_SEED, _tiebreak_key
+    ids = list(range(5000)) + [2**32 - 1, 5_078_344]
+    want = [int(hashlib.md5(f"{_TIEBREAK_SEED}:{t}".encode()).hexdigest()[:16], 16)
+            for t in ids]
+    assert _tiebreak_key(ids) == want
+
+
+def test_precomputed_tiebreak_ranks_identically() -> None:
+    from eval.evaluate import with_tiebreak
+    df = _frame().with_columns(
+        pl.Series("score", [float(i % 7) / 7 for i in range(100)]))
+    keyed = with_tiebreak(df)
+    for s in ([0.0] * 100, [float(i % 3) for i in range(100)]):
+        a = rank_per_day(df.with_columns(pl.Series("score", s)))
+        b = rank_per_day(keyed.with_columns(pl.Series("score", s)))
+        assert a.columns == b.columns and a.equals(b)
+
+
 def test_resolve_crisp_alpha() -> None:
     from eval.evaluate import resolve_crisp_alpha
     assert resolve_crisp_alpha("emit", 0.5) == 0.5
