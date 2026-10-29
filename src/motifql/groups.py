@@ -901,6 +901,44 @@ def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
     raise TypeError(f"unknown plan type: {type(plan).__name__}")
 
 
+def score_batch(graph, positions, plan, libs, prune: bool = True,
+                crisp: bool = False, crisp_alpha: float = 0.0,
+                floor: float | None = None):
+    """Score many anchors against one plan: the batch form of score_any.
+
+    Returns ``(top_score float64[n], found bool[n], expansions float64[n],
+    truncated bool[n])`` aligned with ``positions``, equal element for
+    element to ``[score_any(graph, p, plan, libs, ...) for p in positions]``.
+    Anchors run in the given order, so the lazy eviction floors move as in
+    that loop. Path plans go to ``matcher.score_path_batch`` (serial: no
+    numba threads, so callers may fork afterwards), group and butterfly
+    plans to ``score_group_batch``, anything else through score_any one
+    anchor at a time. Use score_any for witnesses and explanations.
+    """
+    from motifql import planner as _planner
+
+    if isinstance(plan, _planner.PathPlan):
+        from motifql.matcher import score_path_batch
+        b = score_path_batch(graph, positions, plan, libs, prune=prune, crisp=crisp,
+                             crisp_alpha=crisp_alpha, floor=floor, parallel=False)
+        return b.top_score, b.found, b.expansions.astype(np.float64), b.truncated
+    if isinstance(plan, (_planner.GroupPlan, _planner.ButterflyPlan)):
+        top, found, exps, trunc = score_group_batch(graph, positions, plan, libs,
+                                                    crisp=crisp, crisp_alpha=crisp_alpha)
+        return top, found, exps.astype(np.float64), trunc
+    pos = list(positions)
+    top = np.empty(len(pos), dtype=np.float64)
+    found = np.empty(len(pos), dtype=bool)
+    exps = np.empty(len(pos), dtype=np.float64)
+    trunc = np.empty(len(pos), dtype=bool)
+    for i, p in enumerate(pos):
+        res = score_any(graph, p, plan, libs, prune=prune, crisp=crisp,
+                        crisp_alpha=crisp_alpha, floor=floor)
+        top[i], found[i], exps[i], trunc[i] = (res.top_score, res.found,
+                                               res.expansions, res.truncated)
+    return top, found, exps, trunc
+
+
 def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False,
                 crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a GroupPlan by kind."""

@@ -8,6 +8,8 @@
   exactly like the pure walk (the kernel mirrors the cap or falls back).
 * The scatter count gate clamps literals past int64 (found=False, as in
   the reference) instead of raising OverflowError.
+* ``groups.score_batch`` equals a ``score_any`` loop for every plan type,
+  including the lazy eviction floors it leaves behind.
 """
 
 from __future__ import annotations
@@ -118,7 +120,8 @@ def test_term_edit_between_calls_is_seen_by_path_fast_path(doc) -> None:
     def run():
         single = [_canon(M.score(g, a, plan, libs, floor=M.EXACT_FLOOR)) for a in anchors]
         b = M.score_path_batch(g, anchors, plan, libs, floor=M.EXACT_FLOOR)
-        return single, [t.hex() for t in b.top_score.tolist()]
+        sb = groups.score_batch(g, anchors, plan, libs, floor=M.EXACT_FLOOR)
+        return single, b.top_score.tolist(), [t.hex() for t in sb[0].tolist()]
 
     before_fast, before_pure = _both(run)
     assert before_fast == before_pure
@@ -279,3 +282,57 @@ def test_count_gate_clamps_huge_literals(doc, lit, op) -> None:
 def test_count_gate_negative_huge_literal_is_no_gate() -> None:
     assert groups_fast._count_gate(_count_having(">=", Num(-(10**400))), "m") == 0
     assert groups_fast._count_gate(_count_having(">", Num(-1e300)), "m") == 0
+
+
+# -- score_batch ------------------------------------------------------------------
+
+def _loop(graph, positions, plan, libs, **kw):
+    rs = [groups.score_any(graph, p, plan, libs, **kw) for p in positions]
+    return (np.array([r.top_score for r in rs], dtype=np.float64),
+            np.array([r.found for r in rs], dtype=bool),
+            np.array([r.expansions for r in rs], dtype=np.float64),
+            np.array([r.truncated for r in rs], dtype=bool))
+
+
+BATCH_MODES = [dict(), dict(prune=False), dict(floor=M.EXACT_FLOOR),
+               dict(crisp=True, crisp_alpha=0.5), dict(crisp=True, crisp_alpha=1.5)]
+
+
+@pytest.mark.parametrize("name", ["rt_fast", "rt_deferred", "round_trip", "layering_chain",
+                                  "fan_out", "fan_in", "scatter_gather", "gather_scatter",
+                                  "structuring_fan_in", "bipartite_butterfly"])
+@pytest.mark.parametrize("evict_h", [None, 30])
+def test_score_batch_equals_score_any_loop(doc, name, evict_h) -> None:
+    plan = compile_motif(doc, name)
+    libs = libs_from_doc(doc)
+    frame = _frame(9, n_acc=7, n=240)
+    for kw in BATCH_MODES:
+        g_b, g_l = TemporalGraph.from_transfers(frame), TemporalGraph.from_transfers(frame)
+        positions = np.arange(g_b.n_edges, dtype=np.int64)[::-1][::2].copy()
+        if evict_h is not None:
+            t = int(g_b.times[g_b.n_edges // 2]) - evict_h * 3600
+            g_b.evict_before(t)
+            g_l.evict_before(t)
+        try:
+            want = _loop(g_l, positions.tolist(), plan, libs, **kw)
+        except ValueError:
+            with pytest.raises(ValueError):
+                groups.score_batch(g_b, positions, plan, libs, **kw)
+            continue
+        got = groups.score_batch(g_b, positions, plan, libs, **kw)
+        for x, y, dt in zip(got, want, (np.float64, np.bool_, np.float64, np.bool_)):
+            assert x.dtype == dt and x.shape == y.shape
+            assert x.tobytes() == y.tobytes(), (name, kw)
+        assert np.array_equal(g_b._in_lo, g_l._in_lo), (name, kw)
+        assert np.array_equal(g_b._out_lo, g_l._out_lo), (name, kw)
+
+
+def test_score_batch_empty_and_unknown_plans(doc) -> None:
+    g = TemporalGraph.from_transfers(_frame(10))
+    libs = libs_from_doc(doc)
+    for name in ("rt_fast", "fan_out", "bipartite_butterfly"):
+        out = groups.score_batch(g, np.empty(0, dtype=np.int64), compile_motif(doc, name), libs)
+        assert [a.shape for a in out] == [(0,)] * 4
+    assert [a.shape for a in groups.score_batch(g, [], object(), libs)] == [(0,)] * 4
+    with pytest.raises(TypeError):
+        groups.score_batch(g, [0], object(), libs)
