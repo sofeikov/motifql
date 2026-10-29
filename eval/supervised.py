@@ -3,7 +3,10 @@
 
 Trains gradient-boosted trees on the training split with flag labels: the 18
 trailing-window aggregates plus one-hot payment_format (and a no-format
-variant, per the shortcut policy in the day report). Same per-day ranking
+variant, per the shortcut policy in the day report), plus `_own` variants
+that also see the transfer's own amount and self-loop flag (#15 B: any
+ezrules rule would use them, and motifs read the anchor's amount, so a
+baseline without them concedes the comparison). Same per-day ranking
 and recall protocol as the unsupervised baseline, shared via
 `eval/features.py`, `eval/splits.py` and `eval/evaluate.py`. The last train
 day doubles as the early-stopping validation set. No account or bank ids
@@ -37,6 +40,20 @@ DEFAULT_HOLDOUT = f"{splits.HOLDOUT_START},{splits.HOLDOUT_END}"
 DEFAULT_BUDGETS = "50,100,500,5000"
 COLS = ["model", "granularity", "set", "budget", "group", "n_total", "n_hit", "recall"]
 FORMATS = ["ACH", "Bitcoin", "Cash", "Cheque", "Credit Card", "Reinvestment", "Wire"]
+OWN_FEATS = ["own_log_amount", "own_is_self_loop"]
+
+
+def own_transfer_features(df: pl.DataFrame) -> pl.DataFrame:
+    """The transfer's own amount (log1p USD) and self-loop flag.
+
+    Null amounts (no FX path in prep) read 0.0, the same convention as
+    `features.py`. Needs from_key/to_key/amount_usd columns.
+    """
+    return df.select(
+        "transfer_id",
+        pl.col("amount_usd").fill_null(0.0).log1p().alias("own_log_amount"),
+        (pl.col("from_key") == pl.col("to_key")).cast(pl.Float32).alias("own_is_self_loop"),
+    )
 
 
 def main(
@@ -65,26 +82,39 @@ def main(
     log.info("[2/4] computing trailing-window features")
     feats = features.compute_all(df)
     feat_names = [c for c in feats.columns if c != "transfer_id"]
+    own = own_transfer_features(df)
+    n_null_amt = int(df.filter(pl.col("amount_usd").is_null()).select(pl.len()).item())
+    log.info("  own-amount nulls (read as 0.0): %d", n_null_amt)
     full = (df.select("transfer_id", "day", "is_laundering", "payment_format")
               .join(feats, on="transfer_id", how="left", maintain_order="left")
+              .join(own, on="transfer_id", how="left", maintain_order="left")
               .with_columns(pl.col(feat_names).cast(pl.Float32),
+                            pl.col("own_log_amount").cast(pl.Float32),
                             *[(pl.col("payment_format") == f).cast(pl.Float32).alias(f"fmt_{f}")
                               for f in FORMATS]))
     day = full["day"].to_numpy()
     y = full["is_laundering"].to_numpy()
     X18 = full.select(feat_names).to_numpy()
     Xfmt = full.select([f"fmt_{f}" for f in FORMATS]).to_numpy()
+    Xown = full.select(OWN_FEATS).to_numpy()
     is_fit = (day >= np.datetime64(tr0)) & (day < np.datetime64(tr1))
     is_val = day == np.datetime64(tr1)
     is_hold = (day >= np.datetime64(ho0)) & (day <= np.datetime64(ho1))
     log.info("  fit rows: %d, valid rows: %d, holdout rows: %d",
              is_fit.sum(), is_val.sum(), is_hold.sum())
 
-    log.info("[3/4] training gradient boosting (with and without format)")
+    log.info("[3/4] training gradient boosting (format x own-amount variants)")
     tables, scores = [], {}
-    for model, use_fmt in (("gbm", True), ("gbm_noformat", False)):
-        X = np.concatenate([X18, Xfmt], axis=1) if use_fmt else X18
-        names = feat_names + [f"fmt_{f}" for f in FORMATS] if use_fmt else feat_names
+    for model, use_fmt, use_own in (("gbm", True, False), ("gbm_noformat", False, False),
+                                    ("gbm_own", True, True), ("gbm_noformat_own", False, True)):
+        parts, names = [X18], list(feat_names)
+        if use_fmt:
+            parts.append(Xfmt)
+            names += [f"fmt_{f}" for f in FORMATS]
+        if use_own:
+            parts.append(Xown)
+            names += OWN_FEATS
+        X = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
         # No scale_pos_weight: the evaluation ranks transfers, and with a
         # weight in the hundreds the first tree overshoots from the
         # unweighted base rate, so early stopping keeps iteration 1 and
