@@ -6,6 +6,14 @@ attempts with sanity feedback) and a single-shot baseline (arm
 reference on a fixed train-anchor sample (seeded: every train
 instance's last-member anchor plus uniform background fill).
 
+Sanity (#15 #7): the repair candidate scores a sanity sample of all
+train truth anchors plus background disjoint from the eval fill. The
+only feedback signals are a shape failure (no truth anchor fires)
+and an over-broad motif (background rate above SANITY_HI); fixed
+low-rate thresholds cannot work at 0.1% truth rates (0 background
+fires is the expected outcome for a rare-pattern motif, and the old
+"loosen" feedback degraded Jaccard 0.957 -> 0.629).
+
 Primary metric: share compiling within N attempts. Secondary: Jaccard
 over fired witness edge-sets (None when the reference fires nothing on
 the sample — uninformative, flagged for review). Reference witness sets
@@ -47,8 +55,8 @@ log = logging.getLogger("rq4")
 
 REF_CACHE = Path("eval/results/cache/rq4_refs.parquet")
 RUNS_CSV = Path("eval/results/rq4_runs.csv")
-SANITY_N = 400
-SANITY_LO = 0.0
+SANITY_BG_N = 1000
+SANITY_BG_SEED = 7
 SANITY_HI = 0.20
 
 app = typer.Typer(add_completion=False)
@@ -74,25 +82,40 @@ def _jaccard(ref: set, cand: set) -> float | None:
     return len(ref & cand) / len(ref | cand)
 
 
+def _engine_hash() -> str:
+    """Hash of the engine sources: any scoring change rebuilds refs.
+
+    Without this, cached reference witness sets silently survive engine
+    fixes and candidates are compared against stale oracles (#15).
+    """
+    h = hashlib.sha256()
+    src = Path(__file__).resolve().parent.parent / "src" / "motifql"
+    for name in sorted(p.name for p in src.glob("*.py")):
+        h.update((src / name).read_bytes())
+    return h.hexdigest()[:16]
+
+
 def _load_or_build_refs(graph, sample: np.ndarray, seed: int,
                       sample_n: int, data: Path) -> dict[str, set]:
-    """Reference witness sets, cached by (sample, reference text).
+    """Reference witness sets, cached by (sample, reference text, engine).
 
     The key carries a hash of the evaluated sample plus the run's seed,
-    sample size and data dir: reruns that change any of them rebuild
-    instead of comparing candidates against stale oracle sets.
+    sample size, data dir and engine sources: reruns that change any of
+    them rebuild instead of comparing candidates against stale oracles.
     """
     sample_hash = hashlib.sha256(np.ascontiguousarray(sample).tobytes()).hexdigest()[:16]
+    engine_hash = _engine_hash()
     want = {it["id"]: hashlib.sha256(it["reference"].encode()).hexdigest()[:16]
             for it in ITEMS}
     cached: dict[str, set] = {}
     if REF_CACHE.exists():
         frame = pl.read_parquet(REF_CACHE)
-        if {"sample_hash", "sample_n", "data"} <= set(frame.columns):
+        if {"sample_hash", "sample_n", "data", "engine_hash"} <= set(frame.columns):
             frame = frame.filter(
                 (pl.col("sample_hash") == sample_hash)
                 & (pl.col("seed") == seed)
                 & (pl.col("sample_n") == sample_n)
+                & (pl.col("engine_hash") == engine_hash)
                 & (pl.col("data") == str(data)))
             for row in frame.iter_rows(named=True):
                 if want.get(row["item_id"]) == row["ref_hash"]:
@@ -110,7 +133,7 @@ def _load_or_build_refs(graph, sample: np.ndarray, seed: int,
         cached[it["id"]] = wit
         rows.append({"item_id": it["id"], "ref_hash": want[it["id"]],
                      "seed": seed, "sample_n": sample_n, "data": str(data),
-                     "sample_hash": sample_hash,
+                     "sample_hash": sample_hash, "engine_hash": engine_hash,
                      "witnesses": [sorted(w) for w in wit]})
         log.info("  ref %-24s fires %d witness sets", it["id"], len(wit))
     if rows:
@@ -118,6 +141,7 @@ def _load_or_build_refs(graph, sample: np.ndarray, seed: int,
         new = pl.DataFrame(rows, schema={"item_id": pl.String, "ref_hash": pl.String,
                                          "seed": pl.Int64, "sample_n": pl.Int64,
                                          "data": pl.String, "sample_hash": pl.String,
+                                         "engine_hash": pl.String,
                                          "witnesses": pl.List(pl.List(pl.Int64))})
         if REF_CACHE.exists():
             old = pl.read_parquet(REF_CACHE)
@@ -156,7 +180,39 @@ def _sample_anchors(data: Path, graph, scoped: pl.DataFrame,
     sample = np.sort(np.array(sorted(truth) + fill.tolist()))
     log.info("sample: %d truth anchors + %d background = %d (seed %d)",
              len(truth), len(fill), len(sample), seed)
-    return sample
+    return sample, sorted(truth), fill.tolist()
+
+
+def sanity_background_ids(anchor_pos: np.ndarray, eval_used: set[int],
+                            n: int = SANITY_BG_N,
+                            seed: int = SANITY_BG_SEED) -> list[int]:
+    """Background positions for repair sanity, disjoint from eval.
+
+    The old sanity slice came from the eval sample itself, so feedback
+    was derived from eval data. Truth anchors are shared deliberately
+    (they are the repair target, not a secret); only the background
+    fill is disjoint.
+    """
+    pool = [int(p) for p in anchor_pos.tolist() if int(p) not in eval_used]
+    rng = np.random.default_rng(seed)
+    return rng.choice(pool, size=min(n, len(pool)), replace=False).tolist()
+
+
+def sanity_feedback(truth_hit: int, n_truth: int, bg_hit: int, n_bg: int) -> str | None:
+    """Repair feedback from a sanity scoring, if any is warranted.
+
+    A zero background count is the expected outcome for a rare-pattern
+    motif, so there is no low-rate rule — only a shape failure (no
+    train-truth anchor fires) and an over-broad motif (background rate
+    above SANITY_HI) speak.
+    """
+    if n_truth and truth_hit == 0:
+        return (f"fires on 0/{n_truth} train truth anchors: the shape is wrong, "
+                "not the thresholds — re-read the pattern before loosening anything")
+    if n_bg and bg_hit / n_bg > SANITY_HI:
+        return (f"background fire rate {bg_hit}/{n_bg} is over 20%: the motif is "
+                "too broad — tighten the shape or thresholds")
+    return None
 
 
 def _complete(messages):
@@ -165,27 +221,28 @@ def _complete(messages):
 
 
 def _run_item(item: dict, arm: str, max_attempts: int, graph,
-              sample: np.ndarray, ref_wit: set, prov: dict) -> dict:
-    sanity_sample = sample[:min(SANITY_N, len(sample))]
-
+              sample: np.ndarray, ref_wit: set, prov: dict,
+              sanity_truth: list[int], sanity_bg: list[int]) -> dict:
     def sanity(compiled) -> list[str]:
-        fires = 0
-        for pos in sanity_sample.tolist():
-            try:
-                res = score_any(graph, int(pos), compiled.plan, compiled.libs,
-                                prune=True)
-            except Exception as exc:
-                return [f"scoring crashed: {type(exc).__name__}: {exc}"[:300]]
-            fires += bool(res.found)
-        rate = fires / max(len(sanity_sample), 1)
-        if rate <= SANITY_LO:
-            return [f"matches nothing on {len(sanity_sample)} sampled train "
-                    f"anchors; loosen a condition (wider window, softer term, "
-                    f"lower count gate)."]
-        if rate > SANITY_HI:
-            return [f"matches {rate:.0%} of sampled train traffic; tighten a "
-                    f"condition (narrower window, stricter term, higher gate)."]
-        return []
+        def fires(positions: list[int]) -> int:
+            n = 0
+            for pos in positions:
+                try:
+                    res = score_any(graph, int(pos), compiled.plan, compiled.libs,
+                                    prune=True)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"scoring crashed: {type(exc).__name__}: {exc}"[:300])
+                n += bool(res.found)
+            return n
+
+        try:
+            truth_hit = fires(sanity_truth)
+            bg_hit = fires(sanity_bg)
+        except RuntimeError as exc:
+            return [str(exc)]
+        fb = sanity_feedback(truth_hit, len(sanity_truth), bg_hit, len(sanity_bg))
+        return [fb] if fb else []
 
     # Arms: `repair` (compile + sanity feedback), `repair_nosanity`
     # (compile feedback only — isolates the sanity step's effect),
@@ -267,7 +324,12 @@ def main(
     anchor_pos = np.flatnonzero(
         (days >= np.datetime64(str(tr0))) & (days <= np.datetime64(str(tr1))))
     log.info("graph edges: %d, train anchors: %d", graph.n_edges, len(anchor_pos))
-    sample = _sample_anchors(data, graph, scoped, anchor_pos, sample_n, seed)
+    sample, sanity_truth, eval_fill = _sample_anchors(
+        data, graph, scoped, anchor_pos, sample_n, seed)
+    sanity_bg = sanity_background_ids(
+        anchor_pos, set(sanity_truth) | set(eval_fill))
+    log.info("sanity: %d truth anchors + %d disjoint background",
+             len(sanity_truth), len(sanity_bg))
     ref_wits = _load_or_build_refs(graph, sample, seed, sample_n, data)
     RUNS_CSV.parent.mkdir(parents=True, exist_ok=True)
     header_written = RUNS_CSV.exists()
@@ -278,7 +340,7 @@ def main(
                 "ref_hash": ref_hashes[it["id"]]}
         try:
             row = _run_item(it, arm, max_attempts, graph, sample,
-                            ref_wits[it["id"]], prov)
+                            ref_wits[it["id"]], prov, sanity_truth, sanity_bg)
         except Exception as exc:  # harness never dies on one item
             log.warning("  item failed: %r", exc)
             row = {"item_id": it["id"], "arm": arm, "compiled": False,
