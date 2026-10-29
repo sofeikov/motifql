@@ -36,11 +36,11 @@ from motifql.parser import (
 
 log = logging.getLogger("planner")
 
-# Cost budget: estimated expansions per anchor above this refuse the motif.
-# Calibrated so the reference motifs pass on HI-Small (round_trip ~1e5,
-# layering_chain ~1e6); a hypothetical *2..8 motif estimates ~1e8 and is
-# rejected with the bound to tighten.
-DEFAULT_COST_BUDGET = 10_000_000
+# No static cost gate (#15 #5): mean-degree expansion estimates were wrong
+# by orders of magnitude (layering measured ~1e3 against a ~1e8 estimate)
+# and refused feasible motifs. Cost is bounded at runtime by the per-step
+# fan-out and per-anchor expansion caps, with truncation flagged per
+# result; the evaluation reports truncation rates instead.
 
 
 class PlanError(Exception):
@@ -78,7 +78,6 @@ class PathPlan:
     deferred: object | None  # soft AST evaluated on completion (None = all pruned)
     score_tnorm: str
     emit: float
-    est_expansions: float
 
 
 @dataclass(frozen=True)
@@ -106,7 +105,6 @@ class GroupPlan:
     where: object | None
     score_tnorm: str
     emit: float
-    est_expansions: float
 
     def role(self, name: str) -> str:
         """Variable name for a role (KeyError when the kind lacks it)."""
@@ -129,7 +127,6 @@ class ButterflyPlan:
     soft: object | None
     score_tnorm: str
     emit: float
-    est_expansions: float
 
 
 # -- soft classification ---------------------------------------------------
@@ -228,7 +225,7 @@ def _as_step_atom(item: object, edge_var: str):
 
 # -- entry point -----------------------------------------------------------
 
-def compile_motif(doc: Document, name: str, stats=None):
+def compile_motif(doc: Document, name: str):
     """Check, then plan one motif. Raises CheckError-list or PlanError."""
     motif = next((m for m in doc.motifs if m.name == name), None)
     if motif is None:
@@ -241,9 +238,9 @@ def compile_motif(doc: Document, name: str, stats=None):
                         "; ".join(e.message() for e in by_motif[:3]),
                         "fix the static errors first.")
     if motif.group is not None:
-        return _compile_group(doc, motif, stats)
+        return _compile_group(doc, motif)
     if len(motif.patterns) != 1:
-        return _compile_butterfly(doc, motif, stats)
+        return _compile_butterfly(doc, motif)
     (pat,) = motif.patterns
     if len(pat.edges) != 1 or pat.edges[0].max_hops is None:
         raise PlanError("E_PLAN", name, "the single edge must be variable-length `*m..n`.",
@@ -275,13 +272,8 @@ def compile_motif(doc: Document, name: str, stats=None):
         log.info("%s: open chain without deferred soft, searching *%d..%d as *%d..%d",
                  motif.name, edge.min_hops, max_hops, edge.min_hops, edge.min_hops)
         max_hops = edge.min_hops
-    est = estimate_cost(max_hops, stats) if stats is not None else -1.0
-    if stats is not None and est > DEFAULT_COST_BUDGET:
-        raise PlanError("E_COST", name,
-                        f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
-                        f"tighten `*{edge.min_hops}..{edge.max_hops}` or the window.")
     return PathPlan(motif.name, edge.var, closed, edge.min_hops, max_hops,
-                    window_s, prunable, deferred, motif.score, motif.emit, est)
+                    window_s, prunable, deferred, motif.score, motif.emit)
 
 
 def _require_time_ordered(motif: Motif, edge_var: str) -> None:
@@ -438,63 +430,9 @@ def _window_of(motif: Motif) -> float:
                     "this is a compiler bug: report it.")
 
 
-def estimate_cost(max_hops: int, stats, fanout: int = 1_000) -> float:
-    """Estimated expansions per anchor: sum of mean in-degree powers.
-
-    `stats` is the `degree_histogram()` array (index = in+out degree,
-    value = node count). Uses mean in-degree ≈ mean total / 2, capped per
-    level by the fanout cap and overall by the window edge count when the
-    caller supplies it separately.
-    """
-    import numpy as np
-
-    hist = np.asarray(stats, dtype=np.float64)
-    total = hist.sum()
-    if total == 0:
-        return 0.0
-    mean_deg = (np.arange(len(hist)) * hist).sum() / total / 2.0
-    branch = min(mean_deg, fanout)
-    return float(sum(branch ** i for i in range(1, max_hops + 1)))
-
-
-def _mean_branch(stats, fanout: int = 1_000) -> float:
-    """Mean in-degree (≈ total/2) capped by the fanout cap; -1 when no stats."""
-    if stats is None:
-        return -1.0
-    import numpy as np
-
-    hist = np.asarray(stats, dtype=np.float64)
-    total = hist.sum()
-    if total == 0:
-        return 0.0
-    mean_deg = float((np.arange(len(hist)) * hist).sum() / total / 2.0)
-    return min(mean_deg, fanout)
-
-
-def estimate_group_cost(kind: str, stats, window_s: float, fanout: int = 1_000) -> float:
-    """Cost sanity bound for group/butterfly plans (Oct 30).
-
-    Fan motifs touch one windowed adjacency list; scatter/gather touch two
-    levels; the butterfly touches up to four. All scale with the window, so
-    the bound multiplies the branching factor by window days. Reference
-    motifs estimate in the tens, far below the 10M path budget.
-    """
-    branch = _mean_branch(stats, fanout)
-    if branch < 0:
-        return -1.0
-    window_days = max(window_s / 86400.0, 1 / 24)
-    if kind == "fan":
-        return branch * window_days
-    if kind in ("scatter", "gather"):
-        return branch * branch * window_days
-    if kind == "butterfly":
-        return branch ** 4 * window_days
-    return branch * window_days
-
-
 # -- group + butterfly compilation (Oct 30) --------------------------------
 
-def _compile_group(doc: Document, motif: Motif, stats=None):
+def _compile_group(doc: Document, motif: Motif):
     """Plan one `group by ... over ...` motif; E_PLAN outside v0 coverage."""
     group = motif.group
     assert group is not None
@@ -508,15 +446,9 @@ def _compile_group(doc: Document, motif: Motif, stats=None):
     _validate_group_where(motif, kind, roles)
     _validate_group_having(motif, kind, roles)
     _validate_group_soft(motif, kind, roles, doc)
-    est = (estimate_group_cost(kind, stats, group.window_s)
-           if stats is not None else -1.0)
-    if stats is not None and est > DEFAULT_COST_BUDGET:
-        raise PlanError("E_COST", motif.name,
-                        f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
-                        "tighten the group window.")
     return GroupPlan(motif.name, kind, tuple(roles.items()), motif.group.keys,
                      motif.group.members, group.window_s, motif.having,
-                     motif.soft, motif.where, motif.score, motif.emit, est)
+                     motif.soft, motif.where, motif.score, motif.emit)
 
 
 def _group_shape(motif: Motif) -> tuple[str, dict[str, str]]:
@@ -724,7 +656,7 @@ def _validate_group_soft(motif: Motif, kind: str, roles: dict[str, str], doc: Do
                                 "pass literal call-site arguments for now.") from exc
 
 
-def _compile_butterfly(doc: Document, motif: Motif, stats=None):
+def _compile_butterfly(doc: Document, motif: Motif):
     """Plan the 2x2 bipartite core; anything else multi-pattern is E_PLAN."""
     if len(motif.patterns) != 4 or any(len(p.edges) != 1 or len(p.nodes) != 2 for p in motif.patterns):
         raise PlanError("E_PLAN", motif.name,
@@ -771,14 +703,8 @@ def _compile_butterfly(doc: Document, motif: Motif, stats=None):
     _validate_butterfly_where(motif, x1, x2, y1, y2)
     _validate_butterfly_soft(motif, doc)
     window_s = _window_of(motif)
-    est = (estimate_group_cost("butterfly", stats, window_s)
-           if stats is not None else -1.0)
-    if stats is not None and est > DEFAULT_COST_BUDGET:
-        raise PlanError("E_COST", motif.name,
-                        f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
-                        "tighten the `span(all)` window.")
     return ButterflyPlan(motif.name, (e1, e2, e3, e4), (x1, x2), (y1, y2),
-                         window_s, motif.soft, motif.score, motif.emit, est)
+                         window_s, motif.soft, motif.score, motif.emit)
 
 
 def _validate_butterfly_where(motif: Motif, x1: str, x2: str, y1: str, y2: str) -> None:

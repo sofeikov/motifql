@@ -368,7 +368,7 @@ def test_real_cycle_top_score_matches_unpruned() -> None:
     # answer either way.
     g = TemporalGraph.from_parquet(HI_SMALL)
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
-    plan = compile_motif(doc, "round_trip", stats=g.degree_histogram())
+    plan = compile_motif(doc, "round_trip")
     libs = libs_from_doc(doc)
     memb = pl.read_parquet("data/hi-small/pattern_members.parquet")
     last_tid = (

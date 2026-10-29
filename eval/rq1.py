@@ -153,11 +153,10 @@ def main(
     log.info("[2/5] compiling motifs from examples/amlworld.motif")
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
-    stats = graph.degree_histogram()
-    plans = {m: compile_motif(doc, m, stats=stats) for m in motifs_wanted}
+    plans = {m: compile_motif(doc, m) for m in motifs_wanted}
     for m, p in plans.items():
-        log.info("  %s: %s window=%.0fs emit=%.2f est=%.1f",
-                 m, type(p).__name__, p.window_s, p.emit, p.est_expansions)
+        log.info("  %s: %s window=%.0fs emit=%.2f",
+                 m, type(p).__name__, p.window_s, p.emit)
 
     global _GRAPH, _PLAN, _LIBS, _PRUNE, _CRISP, _FLOOR
     _GRAPH, _LIBS = graph, libs

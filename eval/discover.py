@@ -139,7 +139,7 @@ def main(
     log.info("[2/4] compiling %d motifs and scoring member+bg anchors", len(MOTIFS))
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
-    plans = {m: compile_motif(doc, m) for m in MOTIFS}  # no stats: E_COST bypass (see rq2)
+    plans = {m: compile_motif(doc, m) for m in MOTIFS}
     batch = _batch_factory(workers, "base")
     want = sorted({p for ps in member_pos.values() for p in ps} | set(bg_pos))
     log.info("  scoring %d anchors per motif", len(want))

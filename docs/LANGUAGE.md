@@ -253,12 +253,10 @@ when:
 4. **Scoping errors.** These are unbound variables, `prev` outside a
    quantifier over a path variable, a quantifier over a non-member variable,
    `having` without `group`, or aggregates outside a group.
-5. **Estimated cost above budget.** The planner computes a sanity bound on
-   expansions per anchor from live degree statistics: mean in-degree powers
-   summed to the max hops (measured ~1.7K mean expansions on HI-Small against
-   a ~1e5 estimate for `round_trip`, so the bound is deliberately loose).
-   It refuses motifs above the configured budget, saying which bound to
-   tighten.
+
+Cost is not a static check: every search carries runtime per-step fan-out
+and per-anchor expansion caps instead, hits are flagged `truncated`, and
+the evaluation reports truncation rates.
 
 ## 6. Why the fuzzy layer is cheap
 

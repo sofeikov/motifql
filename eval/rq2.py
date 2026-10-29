@@ -79,11 +79,6 @@ def main(
     log.info("[2/4] compiling motifs from examples/amlworld.motif")
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
-    # No stats: the cost check is a live-engine guard, and the refit
-    # layering (*5..8) trips E_COST under it (est ~1e8 vs 1e7 budget)
-    # while measuring ~1e3 expansions in practice — the estimate is
-    # loose by design (LANGUAGE.md section 5). The replay records the
-    # true per-anchor cost in rq2_summary.csv instead.
     plans = {m: compile_motif(doc, m) for m in motifs_wanted}
 
     # Check scope per motif, decided BEFORE any replay (review
