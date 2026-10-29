@@ -564,7 +564,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
             mids.setdefault(int(graph.to[int(e)]), []).append(int(e))
         members: dict[int, tuple[list[int], list[int]]] = {}
         for mid, leg1s in mids.items():
-            if mid == d_node:
+            # F8 (#15): the source is never its own intermediary. A
+            # self-loop s→s as leg1 plus the direct s→d payment as
+            # leg2 would otherwise count as a member; truth has no
+            # self-loops, but 11.6% of background transfers are.
+            if mid == d_node or mid == s:
                 continue
             if mid == m0:
                 leg2s = leg2s_by_mid.get(mid, []) + [int(anchor_pos)]
@@ -582,9 +586,10 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
             valid_l1 = [e for e in leg1s if int(graph.times[e]) < latest_l2]
             valid_l2 = [e for e in leg2s if int(graph.times[e]) > earliest_l1]
             members[mid] = (valid_l1, valid_l2)
-        if m0 not in members and s in leg1_by_sender:
+        if m0 not in members and m0 != s and s in leg1_by_sender:
             # The anchor's own leg1 with no separate leg2 record: anchor is leg2.
             # (Only reachable when caps cut m0's out-edges; normally m0 pairs above.)
+            # F8 (#15): m0 == s would re-add the source as its own mid.
             leg1 = leg1_by_sender[s]
             if int(graph.times[int(anchor_pos)]) > int(graph.times[leg1]):
                 members[m0] = ([int(leg1)], [int(anchor_pos)])

@@ -566,3 +566,44 @@ def test_same_minute_ties_are_file_order_free() -> None:
     fa = score_group(TemporalGraph.from_transfers(_frame(fbase)), 3, fplan, flibs)
     fb = score_group(TemporalGraph.from_transfers(_frame(fswapped)), 3, fplan, flibs)
     assert fa.top_score == fb.top_score == pytest.approx(1.0)
+
+
+def test_scatter_source_is_never_its_own_mid() -> None:
+    # F8 (#15): a self-loop s→s as leg1 plus the direct s→d payment as
+    # leg2 must not count as a member. Two genuine mids plus the
+    # degenerate pair score several(2) = 0.5, not several(3) = 1.0.
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "001", "S", 100.0),
+        (10, "001", "S", "002", "M1", 100.0),
+        (12, "001", "S", "002", "M2", 100.0),
+        (15, "001", "S", "003", "D", 100.0),
+        (20, "002", "M1", "003", "D", 100.0),
+        (25, "002", "M2", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 5, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [1, 2, 4, 5]
+
+
+def test_scatter_fallback_skips_source_as_mid() -> None:
+    # Same guard on the anchor-fallback route: with only a self-loop
+    # and direct payments, m0 == s must not become a member through
+    # the fallback. having >= 1 plus a count==1 soft pin the empty
+    # group (several(1) reads 0 and would hide the bug).
+    doc = parse_text(
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 1"
+        " soft count(distinct m) ~= 1 within 1"
+        " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "001", "S", 100.0),
+        (10, "001", "S", "003", "D", 100.0),
+        (20, "001", "S", "003", "D", 100.0),
+    ]))
+    res = score_group(g, 2, plan, libs)
+    assert not res.found and res.top_score == 0.0

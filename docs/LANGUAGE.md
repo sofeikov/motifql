@@ -181,6 +181,10 @@ key variables `K…` into one candidate. The `over` variables are the
 - **Same-timestamp edges are simultaneous.** When a member has several
   edges at its latest timestamp, the body is scored over every tied
   reading and the best wins — file order never picks between them.
+- **Scatter intermediaries exclude the source and destination.** A
+  self-loop `s→s` never forms a member, even beside a direct `s→d`
+  payment. Fan and gather groups count self-loop members as ordinary
+  members.
 
 ### 4.5 `having`: hard group constraints
 
