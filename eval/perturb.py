@@ -282,10 +282,12 @@ def main(
     if budget:
         split = [pl.col("key").str.split("__").list.get(0).alias("motif"),
                  pl.col("key").str.split("__").list.get(1).alias("arm")]
+        # Separate pass: with_columns expressions cannot see the motif
+        # column the split pass creates.
         alpha_of = pl.col("motif").replace_strict(alphas, default=None).alias("alpha")
-        pl.concat(btr_rows).with_columns([*split, alpha_of]).write_csv(
+        pl.concat(btr_rows).with_columns(split).with_columns(alpha_of).write_csv(
             out / "rq2_perturb_budget_transfer.csv")
-        pl.concat(binst_rows).with_columns([*split, alpha_of]).write_csv(
+        pl.concat(binst_rows).with_columns(split).with_columns(alpha_of).write_csv(
             out / "rq2_perturb_budget_instance.csv")
         log.info("  wrote rq2_perturb_budget_{transfer,instance}.csv")
     else:
