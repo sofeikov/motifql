@@ -7,6 +7,12 @@ is unchanged. So on motifs without most/few, crisp score ==
 (fuzzy top_score > 0), and pruning stays sound (pruned crisp ==
 unpruned crisp — the bound must use crisp degrees, since a branch
 with fuzzy 0.5 < emit can still be crisp 1.0).
+
+Issue #15 finding A: the support boundary is the loosest exact rule
+the motif allows, so `crisp_alpha` generalises the leaves to α-cuts
+(degree >= α -> 1.0). For `min` motifs the α-cut score equals
+(fuzzy top_score >= α), which is why the RQ2 exact arm must run at a
+calibrated α (the motif's emit), not at the support.
 """
 
 from __future__ import annotations
@@ -311,3 +317,96 @@ def test_crisp_safety_predicates() -> None:
             assert soft is not None and dsafe(soft), name
     structuring = compile_motif(doc, "structuring_fan_in")
     assert not bsafe(structuring.soft) and not dsafe(structuring.soft)
+
+
+def test_crisp_degree_alpha_table() -> None:
+    assert crisp_degree(0.49, True, 0.5) == 0.0
+    assert crisp_degree(0.5, True, 0.5) == 1.0  # α-cut is >=, support is >
+    assert crisp_degree(0.6, True, 0.5) == 1.0
+    assert crisp_degree(0.001, True, 0.0) == 1.0  # α=0 keeps the support
+    assert crisp_degree(0.4, False, 0.5) == 0.4  # flag off: identity
+    for bad in (-0.1, 1.1):
+        with pytest.raises(ValueError):
+            crisp_degree(0.5, True, bad)
+
+
+def test_path_alpha_cut_is_fuzzy_threshold() -> None:
+    # min motif: per-leaf α-cuts ANDed == (min of leaves >= α), so the
+    # α-cut top_score must equal (fuzzy top_score >= α) on every anchor.
+    _, plan, libs = _round_trip()
+    rows = [
+        (0, "001", "B", "002", "A", 100.0),
+        (27 * 60, "002", "A", "001", "B", 100.0),  # gap soon 0.5
+        (57 * 60, "001", "B", "002", "A", 100.0),  # gap soon ~0.43
+    ]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    for pos in (1, 2):
+        fuzzy = score(g, pos, plan, libs, prune=False).top_score
+        for prune in (False, True):
+            cut = score(g, pos, plan, libs, prune=prune,
+                        crisp=True, crisp_alpha=0.5).top_score
+            assert cut == pytest.approx(1.0 if fuzzy >= 0.5 else 0.0)
+    # Pruned and unpruned α-cuts agree exactly (soundness at α > 0).
+    g2 = TemporalGraph.from_transfers(_frame([
+        (0, "001", "B", "002", "A", 100.0),
+        (60, "003", "C", "002", "A", 10000.0),  # decoy: α-cut-0 amount
+        (27 * 60, "002", "A", "001", "B", 100.0),
+    ]))
+    pruned = score(g2, 2, plan, libs, prune=True, crisp=True, crisp_alpha=0.5)
+    plain = score(g2, 2, plan, libs, prune=False, crisp=True, crisp_alpha=0.5)
+    assert (plain.found, plain.score, plain.witness, plain.top_score) == (
+        pruned.found, pruned.score, pruned.witness, pruned.top_score)
+
+
+def test_product_alpha_cut_differs_from_posthoc() -> None:
+    # Why the α-cut lives in the engine, not in post-processing: under
+    # `product`, per-leaf cuts (1 AND 1) differ from (fuzzy >= α).
+    # several(2) = 0.5, sum-approx = 0.6 -> fuzzy 0.3 < 0.5, cut 1.0.
+    doc = parse_text(
+        "term several = ramp(1, 3)\n"
+        "motif t { match (s:account) -[e:transfer]-> (r:account)"
+        " group by s over r window 1d"
+        " having count(distinct r) >= 2"
+        " soft count(distinct r) is several"
+        " and sum(e.amount) ~= 400 USD within 50%"
+        " score product emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "002", "R0", 150.0),
+        (30, "001", "S", "002", "R1", 170.0),
+    ]))
+    fuzzy = score_group(g, 1, plan, libs)
+    assert fuzzy.top_score == pytest.approx(0.3)
+    cut = score_group(g, 1, plan, libs, crisp=True, crisp_alpha=0.5)
+    assert cut.top_score == pytest.approx(1.0)
+    assert (fuzzy.top_score >= 0.5) != (cut.top_score > 0)
+
+
+def test_alpha_cut_negation() -> None:
+    # Strong negation at α: `is not T` ≡ `not (is T)` and reads 1 iff
+    # the positive degree is below α.
+    from motifql.degrees import libs_from_doc as _libs
+    leaf_doc, expr_doc = _neg_pair()
+    lp, ep = compile_motif(leaf_doc, "t"), compile_motif(expr_doc, "t")
+    libs = _libs(leaf_doc)
+    for gap_min, want in ((27 * 60, 0.0), (30 * 60, 1.0), (3 * 60, 0.0)):
+        g = TemporalGraph.from_transfers(_frame([
+            (0, "001", "B", "002", "A", 100.0),
+            (gap_min, "002", "A", "001", "B", 100.0),
+        ]))
+        for plan in (lp, ep):
+            got = score(g, 1, plan, libs, prune=False,
+                        crisp=True, crisp_alpha=0.5).top_score
+            assert got == pytest.approx(want)
+
+
+def test_alpha_differential_predicate() -> None:
+    from motifql.degrees import crisp_differential_safe as dsafe
+    from motifql.parser import Comparison, Not, Num, Quantified, Ref
+    leaf = Comparison(">=", Ref(("e", "amount")), Num(1.0))
+    assert dsafe(leaf, alpha=0.5, tnorm="min")
+    assert not dsafe(leaf, alpha=0.5, tnorm="product")
+    assert not dsafe(Not(leaf), alpha=0.5, tnorm="min")
+    assert not dsafe(Quantified("most", "e", leaf), alpha=0.5, tnorm="min")
+    assert dsafe(Quantified("each", "e", leaf), alpha=0.5, tnorm="min")
+    assert dsafe(leaf)  # α=0 default keeps the old support rule
