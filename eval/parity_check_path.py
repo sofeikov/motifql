@@ -25,8 +25,8 @@ results do not depend on evaluation order and pure workers may split the
 anchors freely.
 
 Usage:
-    uv run eval/parity_check.py                      # amlworld path motifs
-    uv run eval/parity_check.py --rq4 --n-random 2000  # + RQ4 path references
+    uv run eval/parity_check_path.py                      # amlworld path motifs
+    uv run eval/parity_check_path.py --rq4 --n-random 2000  # + RQ4 path references
 """
 
 from __future__ import annotations

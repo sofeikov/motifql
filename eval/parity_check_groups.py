@@ -19,8 +19,8 @@ The reference runs on forked worker processes sharing the graph
 copy-on-write; the fast path runs in the parent.
 
 Usage:
-    uv run eval/parity_check.py --data data/hi-small
-    uv run eval/parity_check.py --data data/hi-small --motifs scatter_gather --n 2000
+    uv run eval/parity_check_groups.py --data data/hi-small
+    uv run eval/parity_check_groups.py --data data/hi-small --motifs scatter_gather --n 2000
 """
 
 from __future__ import annotations
