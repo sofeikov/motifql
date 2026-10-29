@@ -153,8 +153,10 @@ def main(
                             "set": group.lower(),
                             "n_total": len(sub),
                             "n_hit_plain": plain, "n_hit_overlap": ovlap})
-    pl.DataFrame(tr_rows).write_csv(out / "witness_overlap_transfer.csv")
-    pl.DataFrame(inst_rows).write_csv(out / "witness_overlap_instance.csv")
+    pl.DataFrame(tr_rows, schema_overrides={"alpha": pl.Float64}).write_csv(
+        out / "witness_overlap_transfer.csv")
+    pl.DataFrame(inst_rows, schema_overrides={"alpha": pl.Float64}).write_csv(
+        out / "witness_overlap_instance.csv")
     log.info("[3/3] overlap recall (completable instances, min overlap %.2f)", min_overlap)
     for row in sorted(inst_rows, key=lambda r: (r["motif"], r["arm"], r["budget"])):
         if row["group"] != "completable":
