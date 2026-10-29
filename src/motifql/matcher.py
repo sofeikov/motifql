@@ -17,24 +17,37 @@ one is found despite the caps, is still returned. Exact search returns the
 first (most-recent) witness; ranking witnesses by degree is Oct 29 work,
 when ``soft`` conditions arrive with the compiler.
 
+Execution: ``match``, ``find_all`` and ``score`` run the walk in a numba
+kernel (``motifql._pathkernel``) whenever it models the plan, and fall
+back to the pure-Python walk below otherwise (deferred soft, unusual
+graphs). The two are bit-identical (tests/test_pathkernel_parity.py,
+eval/parity_check.py); ``MOTIFQL_PURE_PYTHON=1`` or ``PURE_PYTHON = True``
+forces the reference. ``score_path_batch`` scores many anchors in one
+kernel call (optionally ``parallel=True``).
+
 Usage:
     from motifql.graph import TemporalGraph
     from motifql.matcher import ROUND_TRIP, match
     graph = TemporalGraph.from_parquet("data/hi-small/transfers.parquet")
     res = match(graph, anchor_pos=123, motif=ROUND_TRIP)
     if res.found: print(res.edges, res.truncated)
+    batch = score_path_batch(graph, positions, plan, libs, floor=EXACT_FLOOR)
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import weakref
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
-from motifql.degrees import eval_soft, step_degrees
+from motifql.degrees import eval_soft, resolve_term_args, step_degrees
 from motifql.graph import SECS_PER_DAY, TemporalGraph
+from motifql.parser import AmountConsCond, Dur, GapTermCond, Money, Num, Pct
 
 log = logging.getLogger("matcher")
 
@@ -42,6 +55,12 @@ log = logging.getLogger("matcher")
 # them, tight enough that the bank-070 senders terminate.
 DEFAULT_MAX_FANOUT = 1_000
 DEFAULT_MAX_EXPANSIONS = 50_000
+
+#: Force the pure-Python reference walk everywhere (parity testing). Set
+#: ``MOTIFQL_PURE_PYTHON=1`` before import, or assign this at runtime.
+#: The numba kernel (``motifql._pathkernel``) is a compute-only port: it
+#: returns bit-identical results and caches no scores between calls.
+PURE_PYTHON = os.environ.get("MOTIFQL_PURE_PYTHON", "") not in ("", "0")
 
 
 @dataclass(frozen=True)
@@ -124,6 +143,20 @@ def _search(
     cap: int = 1,
 ) -> tuple[list[tuple[int, ...]], bool, int]:
     """Exact anchored search behind :func:`match` and :func:`find_all`."""
+    if (not PURE_PYTHON and _fast_ok(graph, anchor_pos, motif.max_fanout)
+            and float(motif.window_s) == float(motif.window_s)):
+        return _search_fast(graph, anchor_pos, motif, collect_all, cap)
+    return _search_py(graph, anchor_pos, motif, collect_all, cap)
+
+
+def _search_py(
+    graph: TemporalGraph,
+    anchor_pos: int,
+    motif: PathMotif,
+    collect_all: bool = False,
+    cap: int = 1,
+) -> tuple[list[tuple[int, ...]], bool, int]:
+    """Pure-Python reference for :func:`_search`."""
     witnesses: list[tuple[int, ...]] = []
 
     def on_extend(parent_pos: int, cand_pos: int) -> bool:
@@ -298,6 +331,18 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
     default): pass EXACT_FLOOR for the exact best witness regardless of
     emit.
     """
+    if not PURE_PYTHON:
+        compiled = _compiled_plan(plan, libs, crisp, crisp_alpha)
+        if compiled is not None and _fast_ok(graph, anchor_pos, DEFAULT_MAX_FANOUT):
+            return _score_fast(graph, anchor_pos, plan, libs, compiled, prune,
+                               crisp, crisp_alpha, floor)
+    return _score_py(graph, anchor_pos, plan, libs, prune, crisp, crisp_alpha, floor)
+
+
+def _score_py(graph: TemporalGraph, anchor_pos: int, plan, libs,
+              prune: bool = True, crisp: bool = False, crisp_alpha: float = 0.0,
+              floor: float | None = None) -> ScoredResult:
+    """Pure-Python reference for :func:`score` (and its fallback)."""
     terms, _ = libs
     tnorm = plan.score_tnorm
     emit = plan.emit
@@ -353,31 +398,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
 
     def on_accept(witness: tuple[int, ...]) -> bool:
         nonlocal best, best_score, floor, top_score
-        times = [int(graph.times[e]) for e in witness]
-        amounts = [float(graph.amount[e]) for e in witness]
-        parts: list[float] = []
-        degs: list[tuple] = []
-        for gi, group in enumerate(plan.prunable):
-            hits: list[tuple[int, float]] = []
-            for i in range(1, len(witness)):
-                ds = [step_degrees(a, times[i] - times[i - 1], amounts[i],
-                                   amounts[i - 1], terms, crisp, crisp_alpha)
-                      for a in group.atoms]
-                ds = [d for d in ds if d is not None]
-                if ds:
-                    hits.append((i, _combine(ds, tnorm)))
-            if hits:
-                deg = min(d for _, d in hits)
-                weakest = min(hits, key=lambda t: t[1])[0] + 1
-            else:
-                deg, weakest = 1.0, None
-            parts.append(deg)
-            degs.append((group.label, deg, weakest))
-        if plan.deferred is not None:
-            ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm,
-                             crisp, crisp_alpha)
-            parts.append(ddef)
-            degs.append(("soft (deferred)", ddef, None))
+        parts, degs = _witness_parts(graph, witness, plan, libs, crisp, crisp_alpha)
         s = _combine(parts, tnorm)
         top_score = max(top_score, s)
         if s >= emit and (best is None or s > best_score):
@@ -396,6 +417,43 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
     return ScoredResult(True, witness, s, degs, truncated, expansions, top_score)
 
 
+def _witness_parts(graph: TemporalGraph, witness: tuple[int, ...], plan, libs,
+                   crisp: bool, crisp_alpha: float) -> tuple[list[float], list[tuple]]:
+    """Per-group degrees of one completed witness, plus explanation rows.
+
+    Shared by the pure-Python accept hook and the fast path (which calls it
+    once, for the winning witness), so explanations are byte-identical.
+    """
+    terms, _ = libs
+    tnorm = plan.score_tnorm
+    times = [int(graph.times[e]) for e in witness]
+    amounts = [float(graph.amount[e]) for e in witness]
+    parts: list[float] = []
+    degs: list[tuple] = []
+    for gi, group in enumerate(plan.prunable):
+        hits: list[tuple[int, float]] = []
+        for i in range(1, len(witness)):
+            ds = [step_degrees(a, times[i] - times[i - 1], amounts[i],
+                               amounts[i - 1], terms, crisp, crisp_alpha)
+                  for a in group.atoms]
+            ds = [d for d in ds if d is not None]
+            if ds:
+                hits.append((i, _combine(ds, tnorm)))
+        if hits:
+            deg = min(d for _, d in hits)
+            weakest = min(hits, key=lambda t: t[1])[0] + 1
+        else:
+            deg, weakest = 1.0, None
+        parts.append(deg)
+        degs.append((group.label, deg, weakest))
+    if plan.deferred is not None:
+        ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm,
+                         crisp, crisp_alpha)
+        parts.append(ddef)
+        degs.append(("soft (deferred)", ddef, None))
+    return parts, degs
+
+
 def _combine(parts: list[float], tnorm: str) -> float:
     if tnorm == "product":
         out = 1.0
@@ -403,3 +461,283 @@ def _combine(parts: list[float], tnorm: str) -> float:
             out *= d
         return out
     return min(parts) if parts else 1.0
+
+
+# -- numba fast path ---------------------------------------------------------
+#
+# A compute-only port of _walk/_score_py/_search_py (motifql._pathkernel).
+# Nothing is cached across calls except (a) a plan's constant atom
+# parameters, compiled once per (plan, term library), and (b) a one-off
+# structural check that the graph's in-segments are time-sorted (the
+# kernel's candidate order relies on it; from_transfers guarantees it).
+# Anything the kernel does not model falls back to the pure-Python code.
+
+_SHAPES = {"trapezoid": (0, 4), "triangle": (0, 3), "ramp": (2, 2), "ramp_down": (3, 2)}
+
+
+@dataclass(frozen=True)
+class _CompiledPlan:
+    """Flat numeric form of a PathPlan (kernel input; see _pathkernel.ATOM_*)."""
+
+    grp_ptr: npt.NDArray[np.int64]  # group g owns atom rows grp_ptr[g]:grp_ptr[g+1]
+    atoms: npt.NDArray[np.float64]  # (n_atoms, ATOM_COLS)
+    tnorm_prod: bool
+    emit: float
+    min_hops: int
+    max_hops: int
+    window_s: float
+    closed: bool
+
+
+# id(plan) -> (weakref(plan), libs[0] (held, compared by identity), compiled|None)
+_PLAN_CACHE: dict[int, tuple] = {}
+
+
+def _compile_path_plan(plan, terms: dict) -> _CompiledPlan | None:
+    """Compile a PathPlan's prunable atoms; None when the kernel can't run it.
+
+    None covers deferred soft (scored per witness by the AST interpreter)
+    and anything step_degrees would reject or compute differently (unknown
+    atom/shape/tolerance, bad term arity): the pure walk then runs, raising
+    exactly when and where it always did.
+    """
+    if plan.deferred is not None or float(plan.window_s) != float(plan.window_s):
+        return None  # deferred soft, or a NaN window (searchsorted orders NaN last)
+    grp_ptr = [0]
+    rows: list[tuple[float, ...]] = []  # _pathkernel.ATOM_* column order
+    try:
+        for group in plan.prunable:
+            for atom in group.atoms:
+                if type(atom) is GapTermCond:
+                    tdef = terms[atom.term]
+                    shape = _SHAPES.get(tdef.shape)
+                    vals = resolve_term_args(atom.term, atom.term_args, terms)
+                    if shape is None or len(vals) != shape[1]:
+                        return None
+                    vals = tuple(float(v) for v in vals)
+                    if tdef.shape == "triangle":
+                        vals = (vals[0], vals[1], vals[1], vals[2])
+                    vals = vals + (0.0,) * (4 - len(vals))
+                    rows.append((0.0, float(shape[0]), *vals,
+                                 float(bool(atom.negated)), 0.0, 0.0))
+                elif type(atom) is AmountConsCond:
+                    tol = atom.tol
+                    if type(tol) is Pct:
+                        pct, w = 1.0, tol.fraction
+                    elif type(tol) is Dur:
+                        pct, w = 0.0, tol.seconds
+                    elif type(tol) is Money:
+                        pct, w = 0.0, tol.amount
+                    elif type(tol) is Num:
+                        pct, w = 0.0, tol.value
+                    else:
+                        return None
+                    rows.append((1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                 float(bool(atom.negated)), pct, float(w)))
+                else:
+                    return None
+            grp_ptr.append(len(rows))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    return _CompiledPlan(
+        grp_ptr=np.asarray(grp_ptr, dtype=np.int64),
+        atoms=np.asarray(rows, dtype=np.float64).reshape(len(rows), 9),
+        tnorm_prod=plan.score_tnorm == "product",
+        emit=float(plan.emit),
+        min_hops=int(plan.min_hops),
+        max_hops=int(plan.max_hops),
+        window_s=float(plan.window_s),
+        closed=bool(plan.closed),
+    )
+
+
+def _compiled_plan(plan, libs, crisp: bool, crisp_alpha: float) -> _CompiledPlan | None:
+    """Compiled plan for the kernel, or None to use the pure-Python walk."""
+    if crisp and not 0.0 <= crisp_alpha <= 1.0:
+        return None  # crisp_degree raises (if a step is ever scored)
+    terms = libs[0]
+    hit = _PLAN_CACHE.get(id(plan))
+    if hit is not None and hit[0]() is plan and hit[1] is terms:
+        return hit[2]
+    compiled = _compile_path_plan(plan, terms)
+    try:
+        ref = weakref.ref(plan, lambda _r, k=id(plan): _PLAN_CACHE.pop(k, None))
+    except TypeError:
+        return compiled
+    _PLAN_CACHE[id(plan)] = (ref, terms, compiled)
+    return compiled
+
+
+def _graph_ok(graph: TemporalGraph) -> bool:
+    """True when the kernel's array assumptions hold for this graph."""
+    key = (id(graph.in_times), id(graph.in_ptr), id(graph.in_edges), id(graph._in_lo))
+    cached = getattr(graph, "_pathkernel_ok", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ok = (graph.in_times.dtype == np.int64 and graph.times.dtype == np.int64
+          and graph.in_ptr.dtype == np.int64 and graph._in_lo.dtype == np.int64
+          and np.issubdtype(graph.in_edges.dtype, np.integer)
+          and np.issubdtype(graph.frm.dtype, np.integer)
+          and np.issubdtype(graph.to.dtype, np.integer)
+          and bool(graph._in_lo.flags.writeable)
+          and len(graph.in_ptr) == graph.n_nodes + 1)
+    if ok and len(graph.in_times) > 1:
+        # Every in-segment time-sorted: drops are allowed only where a new
+        # segment starts. _capped's stable argsort is then the identity.
+        drops = np.flatnonzero(np.diff(graph.in_times) < 0) + 1
+        ok = bool(np.isin(drops, graph.in_ptr).all())
+    graph._pathkernel_ok = (key, ok)
+    return ok
+
+
+def _fast_ok(graph: TemporalGraph, anchor_pos, max_fanout: int) -> bool:
+    """Kernel preconditions; anything else (odd anchors, negative caps) runs pure."""
+    if isinstance(anchor_pos, (bool, np.bool_)) or not isinstance(anchor_pos, (int, np.integer)):
+        return False  # numpy indexes with bools as masks; floats raise
+    return 0 <= anchor_pos < graph.n_edges and max_fanout >= 0 and _graph_ok(graph)
+
+
+def _kernel_args(graph: TemporalGraph) -> tuple:
+    """Graph arrays for the kernel, plus sender/amount in in-adjacency order.
+
+    ``in_frm`` / ``in_amt`` sit beside ``in_times`` (built once per graph,
+    like it a pure re-layout of edge columns, not a result cache): the walk
+    reads candidates' fields from one contiguous segment, not scattered rows.
+    """
+    key = (id(graph.in_edges), id(graph.frm), id(graph.amount))
+    cached = getattr(graph, "_pathkernel_in", None)
+    if cached is None or cached[0] != key:
+        idx = graph.in_edges.astype(np.int64)
+        cached = (key, np.ascontiguousarray(graph.frm[idx]),
+                  np.ascontiguousarray(graph.amount[idx]))
+        graph._pathkernel_in = cached
+    return (graph.times, graph.frm, graph.to, graph.amount, graph.in_ptr,
+            graph.in_edges, graph.in_times, cached[1], cached[2])
+
+
+_DUMMY_ENUM = np.empty((1, 1), dtype=np.int64)
+_DUMMY_LEN = np.empty(1, dtype=np.int64)
+_NO_GROUPS = np.zeros(1, dtype=np.int64)  # grp_ptr of a plan with no groups
+_NO_ATOMS = np.empty((0, 9), dtype=np.float64)
+
+
+def _score_fast(graph: TemporalGraph, anchor_pos: int, plan, libs, cp: _CompiledPlan,
+                prune: bool, crisp: bool, crisp_alpha: float,
+                floor: float | None) -> ScoredResult:
+    from motifql import _pathkernel as K
+
+    best = np.empty(max(cp.max_hops, 2), dtype=np.int64)
+    floor0 = cp.emit if floor is None else float(floor)
+    found, blen, bscore, top, truncated, expansions, _ = K.walk(
+        *_kernel_args(graph), graph._in_lo, True, float(graph.watermark),
+        int(anchor_pos), cp.min_hops, cp.max_hops, cp.window_s, cp.closed,
+        DEFAULT_MAX_FANOUT, DEFAULT_MAX_EXPANSIONS, K.MODE_SCORE, bool(prune),
+        cp.grp_ptr, cp.atoms, cp.tnorm_prod, cp.emit, floor0, bool(crisp),
+        float(crisp_alpha), 1, _DUMMY_ENUM, _DUMMY_LEN, best)
+    if not found:
+        return ScoredResult(False, (), 0.0, (), bool(truncated), int(expansions),
+                            float(top))
+    witness = tuple(int(e) for e in best[:blen - 1]) + (anchor_pos,)
+    _, degs = _witness_parts(graph, witness, plan, libs, crisp, crisp_alpha)
+    return ScoredResult(True, witness, float(bscore), tuple(degs), bool(truncated),
+                        int(expansions), float(top))
+
+
+def _search_fast(graph: TemporalGraph, anchor_pos: int, motif: PathMotif,
+                 collect_all: bool, cap: int) -> tuple[list[tuple[int, ...]], bool, int]:
+    from motifql import _pathkernel as K
+
+    enum_cap = int(cap) if collect_all else 1
+    rows = max(enum_cap, 1)
+    width = max(int(motif.max_hops), 2)
+    enum_out = np.empty((rows, width), dtype=np.int64)
+    enum_len = np.empty(rows, dtype=np.int64)
+    _, _, _, _, truncated, expansions, n_enum = K.walk(
+        *_kernel_args(graph), graph._in_lo, True, float(graph.watermark),
+        int(anchor_pos), int(motif.min_hops), int(motif.max_hops),
+        float(motif.window_s), bool(motif.closed), int(motif.max_fanout),
+        int(motif.max_expansions), K.MODE_ENUM, False, _NO_GROUPS, _NO_ATOMS,
+        False, 0.0, 0.0, False, 0.0, enum_cap, enum_out, enum_len,
+        np.empty(width, dtype=np.int64))
+    witnesses = [tuple(int(e) for e in enum_out[r, :enum_len[r] - 1]) + (anchor_pos,)
+                 for r in range(n_enum)]
+    capped = collect_all and len(witnesses) >= cap
+    return witnesses, bool(truncated) or capped, int(expansions)
+
+
+class PathBatch(NamedTuple):
+    """Per-anchor outputs of :func:`score_path_batch` (row r = positions[r]).
+
+    ``witness`` rows hold the best witness's edge positions oldest first,
+    anchor last, padded with -1 (``witness_len`` gives the length; 0 when
+    not found). ``score`` is 0.0 when not found, as in ScoredResult.
+    """
+
+    top_score: npt.NDArray[np.float64]
+    found: npt.NDArray[np.bool_]
+    expansions: npt.NDArray[np.int64]
+    truncated: npt.NDArray[np.bool_]
+    score: npt.NDArray[np.float64]
+    witness: npt.NDArray[np.int64]
+    witness_len: npt.NDArray[np.int64]
+
+
+def score_path_batch(graph: TemporalGraph, positions, plan, libs, prune: bool = True,
+                     crisp: bool = False, crisp_alpha: float = 0.0,
+                     floor: float | None = None, parallel: bool = False) -> PathBatch:
+    """Score many anchors against one PathPlan with no per-anchor Python.
+
+    Row r equals ``score(graph, positions[r], plan, libs, ...)`` field for
+    field (degrees excepted: call :func:`score` for the few anchors you
+    explain). Anchors run in the given order, so the lazy eviction floors
+    in ``graph._in_lo`` end up exactly as after the serial loop. Plans or
+    graphs the kernel does not model (deferred soft, ...) run the
+    pure-Python walk per anchor.
+
+    ``parallel=True`` uses a numba ``prange`` over anchors. Threads must
+    not race on the lazy floors, so the kernel then reads a read-only
+    copy (``max(_in_lo, in_ptr)``) and writes nothing. That is identical
+    to serial only while the watermark sits at or below the earliest edge
+    time (the default, ``watermark = times[0]``): every rebase floor is
+    then the segment start, and the serial writes are unobservable
+    (``in_degree``, ``degree_histogram`` and ``_rebase`` all take the max
+    with the segment start). Once ``evict_before`` moves the watermark
+    past that, ``parallel`` is ignored and the serial kernel runs.
+    """
+    from motifql import _pathkernel as K
+
+    pos = np.ascontiguousarray(np.asarray(positions, dtype=np.int64))
+    n = len(pos)
+    width = max(int(plan.max_hops), 2)
+    out = PathBatch(
+        top_score=np.zeros(n, dtype=np.float64), found=np.zeros(n, dtype=np.bool_),
+        expansions=np.zeros(n, dtype=np.int64), truncated=np.zeros(n, dtype=np.bool_),
+        score=np.zeros(n, dtype=np.float64),
+        witness=np.full((n, width), -1, dtype=np.int64),
+        witness_len=np.zeros(n, dtype=np.int64))
+    cp = None if PURE_PYTHON else _compiled_plan(plan, libs, crisp, crisp_alpha)
+    in_range = bool(((pos >= 0) & (pos < graph.n_edges)).all()) if n else True
+    if cp is None or not in_range or not _graph_ok(graph):
+        for r, a in enumerate(pos.tolist()):
+            res = score(graph, a, plan, libs, prune, crisp, crisp_alpha, floor)
+            out.top_score[r] = res.top_score
+            out.found[r] = res.found
+            out.expansions[r] = res.expansions
+            out.truncated[r] = res.truncated
+            out.score[r] = res.score
+            out.witness_len[r] = len(res.witness)
+            out.witness[r, :len(res.witness)] = res.witness
+        return out
+    floor0 = cp.emit if floor is None else float(floor)
+    common = (pos, cp.min_hops, cp.max_hops, cp.window_s, cp.closed,
+              DEFAULT_MAX_FANOUT, DEFAULT_MAX_EXPANSIONS, bool(prune),
+              cp.grp_ptr, cp.atoms, cp.tnorm_prod, cp.emit, floor0, bool(crisp),
+              float(crisp_alpha), out.found, out.score, out.top_score,
+              out.truncated, out.expansions, out.witness, out.witness_len)
+    watermark = float(graph.watermark)
+    if parallel and n > 1 and watermark <= float(graph.times.min()):
+        lo_eff = np.maximum(graph._in_lo, graph.in_ptr[:-1])
+        K.score_batch_parallel(*_kernel_args(graph), lo_eff, watermark, *common)
+    else:
+        K.score_batch(*_kernel_args(graph), graph._in_lo, watermark, *common)
+    return out
