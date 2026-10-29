@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 
+import numpy as np
 import polars as pl
 
 _TIEBREAK_SEED = "motifql-tiebreak-v1"
@@ -66,6 +67,41 @@ def transfer_recall(ranked: pl.DataFrame, budgets: list[int]) -> pl.DataFrame:
             rows.append({"budget": k, "group": gname, "n_total": len(gdf),
                          "n_hit": hit, "recall": hit / len(gdf) if len(gdf) else None})
     return pl.DataFrame(rows)
+
+
+def holdout_frame(df: pl.DataFrame, members: pl.DataFrame, inst: pl.DataFrame,
+                  ho0, ho1, n_anchors: int) -> pl.DataFrame:
+    """Holdout-day transfers with pattern labels, aligned to replay order.
+
+    Same frame order as the holdout replay positions (both filter the
+    full frame in order); head() keeps them aligned when a cap
+    truncates the replay.
+    """
+    labels_one = (members.join(inst.select(["instance_id", "pattern_type"]), on="instance_id")
+                  .group_by("transfer_id").agg(pl.col("pattern_type").first()))
+    return (df.filter(pl.col("day").is_between(ho0, ho1))
+            .head(n_anchors)
+            .join(labels_one, on="transfer_id", how="left", maintain_order="left"))
+
+
+def recall_at_budgets(hold_base: pl.DataFrame, members: pl.DataFrame,
+                      inst: pl.DataFrame, scores: dict[str, np.ndarray],
+                      budgets: list[int]) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Transfer + instance recall per score column (shared RQ1/RQ2 protocol).
+
+    `scores` maps output-column name to a holdout-aligned score array;
+    each gets rank_per_day + transfer_recall + instance_recall rows
+    tagged with a `key` column.
+    """
+    tr_rows, inst_rows = [], []
+    for key, top in scores.items():
+        hold = rank_per_day(hold_base.with_columns(pl.Series("score", top)))
+        tr_rows.append(transfer_recall(hold, budgets)
+                       .with_columns(pl.lit(key).alias("key"),
+                                     pl.lit("transfer").alias("granularity")))
+        inst_rows.append(instance_recall(hold, members, inst, budgets)
+                         .with_columns(pl.lit(key).alias("key")))
+    return pl.concat(tr_rows), pl.concat(inst_rows)
 
 
 def instance_recall(ranked: pl.DataFrame, members: pl.DataFrame,

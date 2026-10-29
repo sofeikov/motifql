@@ -277,13 +277,25 @@ class ScoredResult:
     top_score: float = 0.0  # best completed witness even below emit (ranking)
 
 
+#: Floor for exact-max search: pruning below ~0 cuts only branches
+#: that complete at ~0, so pruned search returns the exact top_score
+#: (mod 1e-12) while skipping zero branches. Ranking harnesses use
+#: this instead of unpruned search, which additionally truncates.
+EXACT_FLOOR = 1e-12
+
+
 def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
-          prune: bool = True) -> ScoredResult:
+          prune: bool = True, crisp: bool = False,
+          floor: float | None = None) -> ScoredResult:
     """Score one anchor against a path plan, returning the best witness.
 
     Prunable group degrees accumulate bottom-up as the walk extends; their
     running combination is an upper bound on any completion, so a branch is
-    cut once it drops below the best score so far (or the emit threshold).
+    cut once it drops below the best score so far (or the starting floor).
+    With crisp=True every leaf is support-thresholded (RQ2 exact arm);
+    crisp degrees still bound their completions, so pruning stays sound.
+    `floor` overrides the starting bound (`emit` by default): pass
+    EXACT_FLOOR for the exact best witness regardless of emit.
     """
     terms, _ = libs
     tnorm = plan.score_tnorm
@@ -295,12 +307,13 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
     run_stack: list[list[float]] = []
     best: tuple | None = None  # (witness, score, degrees)
     best_score = -1.0
-    # Best completed witness even below emit, for ranking. Pruning is sound
-    # for the emit-filtered query (a pruned branch can never reach `floor`),
-    # so pruned top_score may understate the unpruned max — but never above
-    # emit: any witness scoring above emit completes under pruning too.
+    # Best completed witness even below emit, for ranking. Pruning is
+    # sound for the floor-filtered query (a pruned branch can never
+    # reach `floor`), so pruned top_score may understate the unpruned
+    # max — but never above the starting floor: any witness scoring
+    # above it completes under pruning too.
     top_score = 0.0
-    floor = emit
+    floor = emit if floor is None else floor
 
     def _parent_degrees(parent_pos: int, cand_pos: int) -> list[float]:
         # Atoms of one step combine with the motif t-norm; group degrees
@@ -311,7 +324,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
         a_c = float(graph.amount[cand_pos])
         out: list[float] = []
         for group in plan.prunable:
-            ds = [step_degrees(a, t_p - t_c, a_p, a_c, terms) for a in group.atoms]
+            ds = [step_degrees(a, t_p - t_c, a_p, a_c, terms, crisp) for a in group.atoms]
             ds = [d for d in ds if d is not None]
             out.append(_combine(ds, tnorm) if ds else 1.0)
         return out
@@ -346,7 +359,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
             hits: list[tuple[int, float]] = []
             for i in range(1, len(witness)):
                 ds = [step_degrees(a, times[i] - times[i - 1], amounts[i],
-                                   amounts[i - 1], terms) for a in group.atoms]
+                                   amounts[i - 1], terms, crisp) for a in group.atoms]
                 ds = [d for d in ds if d is not None]
                 if ds:
                     hits.append((i, _combine(ds, tnorm)))
@@ -358,7 +371,7 @@ def score(graph: TemporalGraph, anchor_pos: int, plan, libs,
             parts.append(deg)
             degs.append((group.label, deg, weakest))
         if plan.deferred is not None:
-            ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm)
+            ddef = eval_soft(plan.deferred, list(witness), graph, libs, tnorm, crisp)
             parts.append(ddef)
             degs.append(("soft (deferred)", ddef, None))
         s = _combine(parts, tnorm)

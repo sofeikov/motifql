@@ -217,3 +217,43 @@ Claude review of the RQ4 writeup, all verified and addressed:
   the last compiling candidate; ref cache keyed by sample (+rewrite
   deletion bug fixed); resume keyed by run provenance; --fresh redoes
   only requested arms. 4 more tests (116/116 pass).
+
+## Nov 4 — Nov 1 stage: RQ2 fuzzy-vs-exact + discovery agent
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `crisp=True` exact arm (`degrees.crisp_degree`, threaded through
+  `matcher.score`, all group executors, butterfly): support-boundary
+  thresholding of soft leaves, strong negation everywhere
+  (`is not T` ≡ `not (is T)`), combination otherwise unchanged;
+  binarity/differential safety predicates scope the harness checks.
+- `eval/rq2.py`: holdout fuzzy-vs-crisp at fixed budgets, both arms
+  pruned — fuzzy via EXACT_FLOOR branch-and-bound (exact best
+  witness; unpruned search truncates and loses positives).
+- `eval/perturb.py` (+threshold tests): threshold recall is a
+  recall/precision trade-off across operating points (kept as the
+  argument for budget comparison); `--budget` mode perturbs every
+  target instance touching scored days with splits recomputed from
+  the perturbed frame. Per-tid noise draws.
+- `src/motifql/models/discovery.py` + `eval/discover.py`: train-only
+  SHOW/TRY/PROPOSE/DONE loop with a bg-fire gate (fail-closed tools,
+  forced final turn, case-sensitive parsing).
+- `docs/2026-11-04-rq2-discovery.md`: full report with the bounded
+  value verdict. (Numbers below refreshed after the #14 review
+  regen; see the report for the tables.)
+
+## Nov 4 (cont.) — PR #14 review corrections
+
+Claude review of the RQ2 writeup, all verified and addressed:
+
+- H1 fixed: fuzzy arm rescored with pruning at emit≈0 (exact
+  branch-and-bound); RQ2 tables regenerated on HI (+groups) and LI.
+- H2 fixed: perturbation pool widened to every target instance with
+  members on scored days; splits recomputed from the perturbed
+  frame; threshold + budget reruns.
+- Report rewritten against fresh CSVs (§5, §6, verdict); smoke
+  numbers, unverified rows, and misdescribed runs corrected.
+- Parser hardened (uppercase, fence-aware, positional id/block);
+  crisp negation unified + deferred/group coverage tests (incl. a
+  mutation check); per-tid noise; seeded spread verify slice;
+  transcript kept on failure. 142/142 pass.

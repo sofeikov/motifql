@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from motifql import degrees as D  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.matcher import score  # noqa: E402
+from motifql.matcher import EXACT_FLOOR, score  # noqa: E402
 from motifql.parser import Pct, parse_text  # noqa: E402
 from motifql.planner import compile_motif  # noqa: E402
 
@@ -411,3 +411,26 @@ def test_all_but_forgives_one_bad_step() -> None:
     assert pruned.found and raw.found
     assert (pruned.witness, pruned.score) == (raw.witness, raw.score)
     assert raw.top_score == pytest.approx(1.0)
+
+
+def test_exact_floor_matches_unpruned() -> None:
+    # Review #14.1: branch-and-bound from ~0 returns the exact best
+    # witness without unpruned search (which risks truncation). This
+    # 0.5 witness is zeroed by default pruning at emit 0.6.
+    g = TemporalGraph.from_transfers(
+        _frame(
+            [
+                (0, "001", "B", "002", "A", 100.0),
+                (27 * 60, "002", "A", "001", "B", 100.0),
+            ]
+        )
+    )
+    _, plan, libs = _round_trip()
+    unpruned = score(g, 1, plan, libs, prune=False)
+    exact = score(g, 1, plan, libs, prune=True, floor=EXACT_FLOOR)
+    default = score(g, 1, plan, libs, prune=True)
+    assert unpruned.top_score == pytest.approx(0.5)
+    assert exact.top_score == pytest.approx(0.5)
+    assert exact.witness == unpruned.witness
+    assert default.top_score == 0.0
+    assert not exact.found  # found still uses the emit threshold

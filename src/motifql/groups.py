@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from motifql.degrees import libs_from_doc, resolve_term_args, term_degree, tol_degree  # noqa: F401
+from motifql.degrees import crisp_degree, libs_from_doc, resolve_term_args, term_degree, tol_degree  # noqa: F401
 from motifql.parser import (
     AllArgs, And, Approx, Arith, Call, Comparison, DistinctArg, Dur, IsTerm, Money, Not, Num,
     Or, Pct, Quantified, Ref,
@@ -211,35 +211,36 @@ def _combine(parts: list[float], tnorm: str) -> float:
     return min(parts) if parts else 1.0
 
 
-def _eval_soft(expr: object, ctx: _Ctx, libs, tnorm: str) -> tuple[float, list[tuple]]:
+def _eval_soft(expr: object, ctx: _Ctx, libs, tnorm: str,
+               crisp: bool = False) -> tuple[float, list[tuple]]:
     """Group soft score plus per-conjunct explanation degrees."""
     if isinstance(expr, And):
         parts: list[float] = []
         degs: list[tuple] = []
         for item in expr.items:
-            s, d = _eval_soft(item, ctx, libs, tnorm)
+            s, d = _eval_soft(item, ctx, libs, tnorm, crisp)
             parts.append(s)
             degs.extend(d)
         return _combine(parts, tnorm), degs
     if isinstance(expr, Or):
         best, best_degs = 0.0, []
         for item in expr.items:
-            s, d = _eval_soft(item, ctx, libs, tnorm)
+            s, d = _eval_soft(item, ctx, libs, tnorm, crisp)
             if s >= best:
                 best, best_degs = s, d
         return best, best_degs
     if isinstance(expr, Not):
-        s, _ = _eval_soft(expr.body, ctx, libs, tnorm)
+        s, _ = _eval_soft(expr.body, ctx, libs, tnorm, crisp)
         return 1.0 - s, [(f"not ({_label(expr.body)})", 1.0 - s, None)]
     if isinstance(expr, Quantified):
-        return _eval_quant(expr, ctx, libs, tnorm)
+        return _eval_quant(expr, ctx, libs, tnorm, crisp)
     if isinstance(expr, Approx):
         x = _arith(expr.left, ctx)
         y = _arith(expr.right, ctx)
-        d = tol_degree(expr.tol, x, y)
+        d = crisp_degree(tol_degree(expr.tol, x, y), crisp)
         return d, [(_label(expr), d, None)]
     if isinstance(expr, IsTerm):
-        d = _eval_term(expr, ctx, libs)
+        d = _eval_term(expr, ctx, libs, crisp)
         return d, [(_label(expr), d, None)]
     if isinstance(expr, Comparison):
         x = _arith(expr.left, ctx)
@@ -252,7 +253,7 @@ def _eval_soft(expr: object, ctx: _Ctx, libs, tnorm: str) -> tuple[float, list[t
     raise ValueError(f"cannot evaluate group soft: {expr!r}")
 
 
-def _eval_term(node: IsTerm, ctx: _Ctx, libs) -> float:
+def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
     term_defs, _ = libs
     if node.term == "time_ordered":
         return 1.0
@@ -260,7 +261,7 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs) -> float:
     if isinstance(base, Call) and base.name == "span":
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, ctx.span)
-        return 1.0 - deg if node.negated else deg
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     if isinstance(base, Call):
         vals = _edge_values(base, ctx)
         x = float(vals[0]) if vals else 0.0
@@ -276,11 +277,12 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs) -> float:
             x = float(max(vals)) if vals else 0.0
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, x)
-        return 1.0 - deg if node.negated else deg
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     raise ValueError(f"cannot evaluate group term use: {node!r}")
 
 
-def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str) -> tuple[float, list[tuple]]:
+def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str,
+                crisp: bool = False) -> tuple[float, list[tuple]]:
     term_defs, quants = libs
     per_member = ctx.member_vals.get(node.var, {})
     hits: list[float] = []
@@ -290,7 +292,7 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str) -> tuple[float, l
         # whose readings all skip is skipped, as before.
         ds = []
         for vals in readings:
-            d = _eval_member(node.body, vals, ctx, libs, tnorm)
+            d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp)
             if d is not None:
                 ds.append(d)
         if not ds:
@@ -325,33 +327,34 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str) -> tuple[float, l
     return deg, [(f"{_quant_label(q)} {node.var}: {_label(node.body)}", deg, None)]
 
 
-def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str) -> float | None:
+def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str,
+                 crisp: bool = False) -> float | None:
     """Degree of one quantifier body for one member; None skips the member."""
     term_defs, _ = libs
     if isinstance(node, And):
-        ds = [_eval_member(i, vals, ctx, libs, tnorm) for i in node.items]
+        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp) for i in node.items]
         ds = [d for d in ds if d is not None]
         return _combine(ds, tnorm) if ds else None
     if isinstance(node, Or):
-        ds = [_eval_member(i, vals, ctx, libs, tnorm) for i in node.items]
+        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp) for i in node.items]
         ds = [d for d in ds if d is not None]
         return max(ds) if ds else None
     if isinstance(node, Not):
-        d = _eval_member(node.body, vals, ctx, libs, tnorm)
+        d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp)
         return None if d is None else 1.0 - d
     if isinstance(node, Approx):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
         if x is None or y is None:
             return None
-        return tol_degree(node.tol, x, y)
+        return crisp_degree(tol_degree(node.tol, x, y), crisp)
     if isinstance(node, IsTerm) and node.term in term_defs:
         v = _member_arith(node.base, vals, ctx)
         if v is None:
             return None
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
-        return 1.0 - deg if node.negated else deg
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     if isinstance(node, Comparison):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
@@ -451,7 +454,7 @@ def _finish(name: str, witness: list[int], graph, s: float, degs: list[tuple],
 
 # -- fan executor --------------------------------------------------------
 
-def _score_fan(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def _score_fan(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     roles = dict(plan.roles)
     key_is_sender = roles["dir"] == "out-key-sender"
     anchor_t = int(graph.times[anchor_pos])
@@ -500,13 +503,13 @@ def _score_fan(graph, anchor_pos: int, plan, libs) -> GroupResult:
         return GroupResult(False, (), 0.0, (), truncated, expansions, 0.0)
     if plan.soft is None:
         return _finish(plan.name, all_edges, graph, 1.0, [], truncated, expansions, plan.emit)
-    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm)
+    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
     return _finish(plan.name, all_edges, graph, s, degs, truncated, expansions, plan.emit)
 
 
 # -- scatter executor ------------------------------------------------------
 
-def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     roles = dict(plan.roles)
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
@@ -618,7 +621,7 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
         if plan.soft is None:
             s_score, degs = 1.0, []
         else:
-            s_score, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm)
+            s_score, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
         witness = sorted({e for l1s, l2s in members.values() for e in (*l1s, *l2s)},
                          key=lambda p: (int(graph.times[p]), int(p)))
         if best is None or s_score > best[0]:
@@ -634,7 +637,7 @@ def _score_scatter(graph, anchor_pos: int, plan, libs) -> GroupResult:
 
 # -- gather executor -------------------------------------------------------
 
-def _score_gather(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def _score_gather(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     roles = dict(plan.roles)
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
@@ -710,14 +713,14 @@ def _score_gather(graph, anchor_pos: int, plan, libs) -> GroupResult:
     if plan.soft is None:
         return _finish(plan.name, g_list + p_list, graph, 1.0, [], truncated,
                        expansions, plan.emit)
-    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm)
+    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
     return _finish(plan.name, g_list + p_list, graph, s, degs, truncated,
                    expansions, plan.emit)
 
 
 # -- butterfly executor ----------------------------------------------------
 
-def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
     a_node = int(graph.frm[anchor_pos])
@@ -779,7 +782,7 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
             return 1.0
         tdef, targs, negated = grade
         d = term_degree(tdef.shape, targs, span_s)
-        return 1.0 - d if negated else d
+        return 1.0 - crisp_degree(d, crisp) if negated else crisp_degree(d, crisp)
 
     def _realize(lst: list[int], t: int) -> int:
         # One leg with the binding's min time t: prefer an edge exactly at
@@ -832,36 +835,44 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
 
 # -- dispatch --------------------------------------------------------------
 
-def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True):
+def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
+              crisp: bool = False, floor: float | None = None):
     """Score one anchor against any Oct 30 plan type.
 
-    Ranking callers must pass `prune=False`: under pruning a path
-    motif's top_score can only be 0 or >= emit, so every below-emit
-    anchor ties at 0 instead of ranking by its best witness.
+    Ranking callers want exact top_scores: pass `floor=EXACT_FLOOR`
+    (branch-and-bound from ~0, exact mod 1e-12) instead of
+    `prune=False`, which additionally risks truncation. Under default
+    pruning a path motif's top_score can only be 0 or >= emit, so
+    every below-emit anchor ties at 0 instead of ranking by its best
+    witness. With crisp=True every soft leaf is support-thresholded
+    (RQ2 exact arm); path pruning stays sound because crisp degrees
+    still bound their completions. `floor` is path-only (groups
+    never prune) and `found` still uses the emit threshold.
     """
     from motifql import planner as _planner
 
     if isinstance(plan, _planner.PathPlan):
         from motifql.matcher import score as _path_score
-        return _path_score(graph, anchor_pos, plan, libs, prune=prune)
+        return _path_score(graph, anchor_pos, plan, libs, prune=prune, crisp=crisp,
+                           floor=floor)
     if isinstance(plan, _planner.GroupPlan):
-        return score_group(graph, anchor_pos, plan, libs)
+        return score_group(graph, anchor_pos, plan, libs, crisp=crisp)
     if isinstance(plan, _planner.ButterflyPlan):
-        return score_butterfly(graph, anchor_pos, plan, libs)
+        return score_butterfly(graph, anchor_pos, plan, libs, crisp=crisp)
     raise TypeError(f"unknown plan type: {type(plan).__name__}")
 
 
-def score_group(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     """Score one anchor against a GroupPlan by kind."""
     if plan.kind == "fan":
-        return _score_fan(graph, anchor_pos, plan, libs)
+        return _score_fan(graph, anchor_pos, plan, libs, crisp)
     if plan.kind == "scatter":
-        return _score_scatter(graph, anchor_pos, plan, libs)
+        return _score_scatter(graph, anchor_pos, plan, libs, crisp)
     if plan.kind == "gather":
-        return _score_gather(graph, anchor_pos, plan, libs)
+        return _score_gather(graph, anchor_pos, plan, libs, crisp)
     raise ValueError(f"unknown group kind: {plan.kind}")
 
 
-def score_butterfly(graph, anchor_pos: int, plan, libs) -> GroupResult:
+def score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
     """Score one anchor against a ButterflyPlan."""
-    return _score_butterfly(graph, anchor_pos, plan, libs)
+    return _score_butterfly(graph, anchor_pos, plan, libs, crisp)
