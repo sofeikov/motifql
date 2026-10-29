@@ -86,7 +86,7 @@ def main(
               for m in motifs_wanted}
 
     top_budget = budget_list[-1]
-    tr_rows, inst_rows = [], []
+    tr_rows, inst_rows, hits_rows_all = [], [], []
     for m in motifs_wanted:
         plan = plans[m]
         for arm in arm_list:
@@ -98,7 +98,18 @@ def main(
                         .get_column("transfer_id").to_list())
             log.info("[2/3] %s %s: scoring %d top-%d truth hits with witnesses",
                      m, arm, len(hit_tids), top_budget)
-            best_ov: dict[int, float] = {}
+            # One row per (hit transfer, instance it belongs to) with raw
+            # overlap counts: any rule is recomputable from the hits file.
+            # Rules: instance-fraction and witness-fraction (|∩|/|I| and
+            # |∩|/|W| >= threshold) plus their union. Instance-fraction
+            # alone is unreachable when the witness is shorter than the
+            # instance (a 5-hop chain vs an 11-transfer RANDOM), and
+            # witness-fraction alone forgives background-enriched group
+            # witnesses — report all three, not one.
+            rank_of = dict(ranked.select("transfer_id", "rank").iter_rows())
+            pat_of_hit = dict(ranked.select("transfer_id", "pattern_type").iter_rows())
+            day_of = dict(ranked.select("transfer_id", "day").iter_rows())
+            hit_rows: list[dict] = []
             for i, tid in enumerate(hit_tids):
                 if i and i % 200 == 0:
                     log.info("  ... %d/%d", i, len(hit_tids))
@@ -108,17 +119,38 @@ def main(
                     crisp_alpha=(alphas[m] if arm == "crisp" else 0.0),
                     floor=(EXACT_FLOOR if arm == "fuzzy" else None))
                 wtids = frozenset(int(graph.transfer_id[e]) for e in res.witness)
-                ov = 0.0
                 for iid in iids_of.get(tid, []):
                     members = members_of[iid]
-                    if members:
-                        ov = max(ov, len(wtids & members) / len(members))
-                best_ov[tid] = ov
-            rank_of = dict(ranked.select("transfer_id", "rank").iter_rows())
-            pat_of_hit = dict(ranked.select("transfer_id", "pattern_type").iter_rows())
+                    hit_rows.append({
+                        "motif": m, "arm": arm, "transfer_id": tid,
+                        "rank": rank_of[tid], "instance_id": iid,
+                        "pattern": pattern_of[iid],
+                        "n_inter": len(wtids & members),
+                        "n_wit": len(wtids), "n_inst": len(members)})
+            for row in hit_rows:
+                row["day"] = str(day_of[row["transfer_id"]])
+            hits_rows_all.extend(hit_rows)
+
+            def passes(row: dict, rule: str) -> bool:
+                inter, wit, inst = row["n_inter"], row["n_wit"], row["n_inst"]
+                inst_ok = inst > 0 and inter / inst >= min_overlap
+                wit_ok = wit > 0 and inter / wit >= min_overlap
+                if rule == "instfrac":
+                    return inst_ok
+                if rule == "witfrac":
+                    return wit_ok
+                return inst_ok or wit_ok
+
+            by_tid: dict[int, list[dict]] = {}
+            for row in hit_rows:
+                by_tid.setdefault(row["transfer_id"], []).append(row)
+            rule_tids = {rule: {t for t, rows in by_tid.items()
+                                if any(passes(r, rule) for r in rows)}
+                         for rule in ("instfrac", "witfrac", "either")}
             for budget in budget_list:
                 hits = [t for t in hit_tids if rank_of[t] <= budget]
-                ov_hits = {t for t in hits if best_ov[t] >= min_overlap}
+                ov = {rule: {t for t in hits if t in rule_tids[rule]}
+                      for rule in rule_tids}
                 alpha = alphas[m] if arm == "crisp" else None
                 groups_tr = ([("ALL_FLAGGED", None)] +
                              [(p, p) for p in patterns])
@@ -133,7 +165,9 @@ def main(
                         "budget": budget, "group": group,
                         "n_total": len(denom),
                         "n_hit_plain": len(plain),
-                        "n_hit_overlap": sum(1 for t in plain if t in ov_hits),
+                        "n_hit_instfrac": sum(1 for t in plain if t in ov["instfrac"]),
+                        "n_hit_witfrac": sum(1 for t in plain if t in ov["witfrac"]),
+                        "n_hit_either": sum(1 for t in plain if t in ov["either"]),
                         "granularity": "transfer"})
                 for group, want_split in (("ALL", None), ("completable", "holdout"),
                                           ("partial", "holdout_partial")):
@@ -144,27 +178,31 @@ def main(
                                if pat is None or pattern_of[iid] == pat]
                         plain = sum(1 for iid in sub
                                     if members_of[iid] & set(hits))
-                        ovlap = sum(1 for iid in sub
-                                    if members_of[iid] & ov_hits)
                         inst_rows.append({
                             "motif": m, "arm": arm, "alpha": alpha,
                             "budget": budget,
                             "group": group if pat is None else pat,
                             "set": group.lower(),
                             "n_total": len(sub),
-                            "n_hit_plain": plain, "n_hit_overlap": ovlap})
+                            "n_hit_plain": plain,
+                            **{f"n_hit_{rule}": sum(
+                                1 for iid in sub if members_of[iid] & ov[rule])
+                               for rule in ("instfrac", "witfrac", "either")},
+                        })
     pl.DataFrame(tr_rows, schema_overrides={"alpha": pl.Float64}).write_csv(
         out / "witness_overlap_transfer.csv")
     pl.DataFrame(inst_rows, schema_overrides={"alpha": pl.Float64}).write_csv(
         out / "witness_overlap_instance.csv")
+    pl.DataFrame(hits_rows_all).write_csv(out / "witness_overlap_hits.csv")
     log.info("[3/3] overlap recall (completable instances, min overlap %.2f)", min_overlap)
     for row in sorted(inst_rows, key=lambda r: (r["motif"], r["arm"], r["budget"])):
         if row["group"] != "completable":
             continue
-        log.info("  %-14s %-5s budget %5d plain %d/%d overlap %d/%d",
+        log.info("  %-14s %-5s budget %5d plain %d/%d inst %d wit %d either %d/%d",
                  row["motif"], row["arm"], row["budget"], row["n_hit_plain"],
-                 row["n_total"], row["n_hit_overlap"], row["n_total"])
-    log.info("  wrote witness_overlap_{transfer,instance}.csv")
+                 row["n_total"], row["n_hit_instfrac"], row["n_hit_witfrac"],
+                 row["n_hit_either"], row["n_total"])
+    log.info("  wrote witness_overlap_{transfer,instance,hits}.csv")
     log.info("done")
 
 
