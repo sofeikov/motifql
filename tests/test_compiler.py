@@ -186,7 +186,11 @@ def test_round_trip_plan() -> None:
 
 def test_layering_chain_plan_is_open() -> None:
     plan = compile_motif(_doc(), "layering_chain")
-    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 8)
+    # G (#15): open chains without deferred soft search to min hops, so
+    # the plan carries the effective (5, 5) bound, not the written *5..8.
+    # Scores and witnesses are unchanged (see test_scores.py); the
+    # rewrite only drops branches that can never win.
+    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 5)
     assert len(plan.prunable) == 2
 
 

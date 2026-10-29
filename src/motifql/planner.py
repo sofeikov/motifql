@@ -263,12 +263,24 @@ def compile_motif(doc: Document, name: str, stats=None):
     _validate_where(motif, edge.var, closed, end_vars, account_vars)
     _validate_soft(motif, edge.var, doc)
     prunable, deferred = _classify_soft(motif, edge.var)
-    est = estimate_cost(edge.max_hops, stats) if stats is not None else -1.0
+    max_hops = edge.max_hops
+    if not closed and deferred is None and max_hops > edge.min_hops:
+        # G (#15): open chains with no deferred soft are decided at min
+        # hops. Every longer witness's min_hops suffix is itself an
+        # accepted witness scoring at least as high (a min over fewer
+        # steps), and accept-before-descend records it first — so
+        # deeper search only adds expansions and truncation, never a
+        # better score or a different witness. Plans carry the
+        # effective bound; scores and witnesses are unchanged.
+        log.info("%s: open chain without deferred soft, searching *%d..%d as *%d..%d",
+                 motif.name, edge.min_hops, max_hops, edge.min_hops, edge.min_hops)
+        max_hops = edge.min_hops
+    est = estimate_cost(max_hops, stats) if stats is not None else -1.0
     if stats is not None and est > DEFAULT_COST_BUDGET:
         raise PlanError("E_COST", name,
                         f"estimated {est:,.0f} expansions/anchor over budget {DEFAULT_COST_BUDGET:,}.",
                         f"tighten `*{edge.min_hops}..{edge.max_hops}` or the window.")
-    return PathPlan(motif.name, edge.var, closed, edge.min_hops, edge.max_hops,
+    return PathPlan(motif.name, edge.var, closed, edge.min_hops, max_hops,
                     window_s, prunable, deferred, motif.score, motif.emit, est)
 
 

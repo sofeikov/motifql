@@ -274,7 +274,9 @@ edges. Their combined degree so far is an **upper bound** on the score of any
 completion. The matcher drops a partial binding as soon as that bound falls
 below the emit threshold, or below the best witness found so far when only
 the best is needed. At the same threshold, a fuzzy motif then explores roughly
-what the equivalent exact motif explores.
+what the equivalent exact motif explores. Open chains with no deferred
+conditions search only to min hops: a longer witness's min-hops suffix always
+accepts first and scores at least as high, so deeper branches can never win.
 
 **Group motifs** (fan-in, fan-out, scatter-gather). Aggregates and the
 relative quantifiers `most`, `few` and `@name` are **not** monotone as a group
