@@ -53,10 +53,18 @@ log = logging.getLogger("groups")
 
 # Hub caps: per adjacency-list cut (most recent first) and per-anchor budget.
 # The fan executor touches one list; scatter touches up to three levels, so
-# its sender fan-out gets its own tighter cap below.
+# it gets its own looser caps below.
 DEFAULT_MAX_FANOUT = 1_000
 DEFAULT_MAX_EXPANSIONS = 50_000
-SCATTER_MAX_SENDERS = 100
+# Scatter caps (#15 #3): the old 100-sender / shared-1000 caps hid whole
+# (s, d) groups on 6%+ of holdout anchors, zeroing background candidates
+# and biasing recall up. Sized ~4x above the largest holdout-sampled
+# lookups (544 senders, 119k out-edges), so they are a catastrophic
+# backstop, not a semantic filter. Flags retained: if a bigger dataset
+# binds them, the truncation rate shows it.
+SCATTER_MAX_SENDERS = 2_000
+SCATTER_MAX_LIST = 500_000
+SCATTER_MAX_EXPANSIONS = 2_000_000
 BUTTERFLY_MAX_PARTNERS = 50
 # Cap on same-timestamp readings tried per member (F1): real ties are a
 # handful; beyond this the keyed-hash order below is cut and truncated set.
@@ -532,11 +540,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
     in_d, _ = graph.incoming(d_node, anchor_t, window_s)
     truncated = False
     expansions = len(in_m0) + len(in_d) + 1
-    if len(in_m0) > DEFAULT_MAX_FANOUT:
-        in_m0 = in_m0[-DEFAULT_MAX_FANOUT:]
+    if len(in_m0) > SCATTER_MAX_LIST:
+        in_m0 = in_m0[-SCATTER_MAX_LIST:]
         truncated = True
-    if len(in_d) > DEFAULT_MAX_FANOUT:
-        in_d = in_d[-DEFAULT_MAX_FANOUT:]
+    if len(in_d) > SCATTER_MAX_LIST:
+        in_d = in_d[-SCATTER_MAX_LIST:]
         truncated = True
     # Most recent leg1 edge per sender into m0.
     leg1_by_sender: dict[int, int] = {}
@@ -556,8 +564,8 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
             continue  # s != d guard
         out_s, _ = graph.outgoing(s, anchor_t, window_s)
         expansions += len(out_s)
-        if len(out_s) > DEFAULT_MAX_FANOUT:
-            out_s = out_s[-DEFAULT_MAX_FANOUT:]
+        if len(out_s) > SCATTER_MAX_LIST:
+            out_s = out_s[-SCATTER_MAX_LIST:]
             truncated = True
         mids: dict[int, list[int]] = {}
         for e in sorted(out_s.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
@@ -638,7 +646,7 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
                          key=lambda p: (int(graph.times[p]), int(p)))
         if best is None or s_score > best[0]:
             best = (s_score, degs, witness)
-        if expansions > DEFAULT_MAX_EXPANSIONS:
+        if expansions > SCATTER_MAX_EXPANSIONS:
             truncated = True
             break
     if best is None:

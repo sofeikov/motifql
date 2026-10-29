@@ -607,3 +607,53 @@ def test_scatter_fallback_skips_source_as_mid() -> None:
     ]))
     res = score_group(g, 2, plan, libs)
     assert not res.found and res.top_score == 0.0
+
+
+def test_scatter_sender_cap_does_not_hide_oldest_group() -> None:
+    # #15 #3: the 100-sender cap cut the oldest senders first, hiding
+    # whole (s, d) groups. 101 senders into m0 where only the oldest
+    # sender's group pairs a second mid: the group must score, clean.
+    rows = [(0, "001", "S0", "002", "M0", 100.0),
+            (1, "001", "S0", "002", "M1", 100.0)]
+    rows += [(2 + i, "001", f"S{i + 1}", "002", "M0", 100.0) for i in range(100)]
+    rows += [(200, "002", "M1", "003", "D", 100.0),
+             (210, "002", "M0", "003", "D", 100.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    doc = _doc()
+    res = score_group(g, len(rows) - 1, compile_motif(doc, "scatter_gather"),
+                      libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert res.truncated is False
+
+
+def test_scatter_outgoing_cap_does_not_hide_cut_mids() -> None:
+    # Same hiding class on the per-sender outgoing list: 1001 mids where
+    # only the oldest (first cut at 1000) pairs a leg2. Both mids must
+    # pair, clean.
+    rows = [(0, "001", "S", "002", "M0", 100.0)]
+    rows += [(1 + i, "001", "S", "002", f"M{i + 1}", 100.0) for i in range(1000)]
+    rows += [(2000, "002", "M0", "003", "D", 100.0),
+             (2010, "002", "M1000", "003", "D", 100.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    doc = _doc()
+    res = score_group(g, len(rows) - 1, compile_motif(doc, "scatter_gather"),
+                      libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert res.truncated is False
+
+
+def test_scatter_caps_still_flag_when_they_bind(monkeypatch) -> None:
+    # The raised caps stay a backstop: force them to bind and the
+    # truncation flag must fire.
+    import motifql.groups as groups_mod
+    monkeypatch.setattr(groups_mod, "SCATTER_MAX_SENDERS", 1)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S1", "002", "M0", 100.0),
+        (1, "001", "S2", "002", "M0", 100.0),
+        (10, "001", "S1", "002", "M1", 100.0),
+        (20, "002", "M1", "003", "D", 100.0),
+        (30, "002", "M0", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 4, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.truncated is True
