@@ -20,9 +20,10 @@ when ``soft`` conditions arrive with the compiler.
 Execution: ``match``, ``find_all`` and ``score`` run the walk in a numba
 kernel (``motifql._pathkernel``) whenever it models the plan, and fall
 back to the pure-Python walk below otherwise (deferred soft, graphs whose
-``csr_ordered`` flag is False). The two are bit-identical
-(tests/test_pathkernel_parity.py, eval/parity_check_path.py);
-``MOTIFQL_PURE_PYTHON=1`` or ``PURE_PYTHON = True`` forces the reference. ``score_path_batch`` scores
+``csr_ordered`` flag is False, ``find_all`` caps the kernel cannot
+mirror). The two are bit-identical (tests/test_pathkernel_parity.py,
+eval/parity_check_path.py); ``MOTIFQL_PURE_PYTHON=1`` or
+``PURE_PYTHON = True`` forces the reference. ``score_path_batch`` scores
 many anchors in one kernel call (optionally ``parallel=True``, which
 starts numba threads: never in a process that forks afterwards).
 Nothing is memoised between calls (see the fast-path section below).
@@ -39,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -144,10 +146,48 @@ def _search(
     cap: int = 1,
 ) -> tuple[list[tuple[int, ...]], bool, int]:
     """Exact anchored search behind :func:`match` and :func:`find_all`."""
-    if (not PURE_PYTHON and _fast_ok(graph, anchor_pos, motif.max_fanout)
+    if (not PURE_PYTHON and isinstance(motif.max_fanout, (int, np.integer))
+            and _fast_ok(graph, anchor_pos, motif.max_fanout)
             and float(motif.window_s) == float(motif.window_s)):
-        return _search_fast(graph, anchor_pos, motif, collect_all, cap)
+        enum_cap = _enum_cap(cap, collect_all, motif.max_expansions)
+        if enum_cap is not None:
+            return _search_fast(graph, anchor_pos, motif, collect_all, cap, enum_cap)
     return _search_py(graph, anchor_pos, motif, collect_all, cap)
+
+
+#: Largest witness buffer the fast search allocates; a larger effective
+#: cap runs the pure walk instead.
+_ENUM_ROWS_MAX = 1 << 16
+
+
+def _enum_cap(cap, collect_all: bool, max_expansions) -> int | None:
+    """Kernel witness cap that stops exactly where the pure walk's
+    ``len(witnesses) >= cap`` does, or None to run the pure walk (a cap or
+    budget the kernel cannot mirror, or a buffer past ``_ENUM_ROWS_MAX``).
+    """
+    if (isinstance(max_expansions, (bool, np.bool_))
+            or not isinstance(max_expansions, (int, np.integer))):
+        return None  # the kernel takes an int64 budget
+    if not collect_all:
+        return 1  # match(): stop at the first witness
+    # Every accept follows its own expansion, so a walk never accepts more
+    # than max(max_expansions, 0) witnesses: one more is a count it never
+    # reaches, i.e. "do not stop on the witness count".
+    unreachable = max(int(max_expansions), 0) + 1
+    if isinstance(cap, (bool, np.bool_, int, np.integer)):
+        k = int(cap)
+    elif isinstance(cap, (float, np.floating)):
+        c = float(cap)
+        if c != c or c == math.inf:
+            k = unreachable  # len >= nan / inf never holds
+        elif c == -math.inf:
+            k = 1
+        else:
+            k = math.ceil(c)  # len >= 2.5 first holds at 3
+    else:
+        return None
+    k = min(max(k, 1), unreachable)  # cap <= 1: the first witness stops it
+    return k if k <= _ENUM_ROWS_MAX else None
 
 
 def _search_py(
@@ -618,11 +658,11 @@ def _score_fast(graph: TemporalGraph, anchor_pos: int, plan, libs, cp: _Compiled
 
 
 def _search_fast(graph: TemporalGraph, anchor_pos: int, motif: PathMotif,
-                 collect_all: bool, cap: int) -> tuple[list[tuple[int, ...]], bool, int]:
+                 collect_all: bool, cap, enum_cap: int
+                 ) -> tuple[list[tuple[int, ...]], bool, int]:
     from motifql import _pathkernel as K
 
-    enum_cap = int(cap) if collect_all else 1
-    rows = max(enum_cap, 1)
+    rows = enum_cap  # >= 1, and the kernel never stores more than enum_cap
     width = max(int(motif.max_hops), 2)
     enum_out = np.empty((rows, width), dtype=np.int64)
     enum_len = np.empty(rows, dtype=np.int64)

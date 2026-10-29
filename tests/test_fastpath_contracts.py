@@ -1,13 +1,19 @@
-"""Contracts around the compiled fast paths: no hidden caches.
+"""Contracts around the compiled fast paths (no hidden caches, edge cases).
 
-Nothing is memoised across calls: editing a term definition in the libs
-dict between calls changes fast and pure results alike, and graph arrays
-(with the in-adjacency copies derived from them) cannot be changed after
-construction, so no derived copy can go stale.
+* Nothing is memoised across calls: editing a term definition in the
+  libs dict between calls changes fast and pure results alike, and graph
+  arrays (with the in-adjacency copies derived from them) cannot be
+  changed after construction, so no derived copy can go stale.
+* ``find_all`` with non-int, infinite, NaN or absurdly large caps behaves
+  exactly like the pure walk (the kernel mirrors the cap or falls back).
+* The scatter count gate clamps literals past int64 (found=False, as in
+  the reference) instead of raising OverflowError.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,7 +27,9 @@ from motifql import groups, groups_fast  # noqa: E402
 from motifql import matcher as M  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.parser import Dur, Num, TermDef, parse_text  # noqa: E402
+from motifql.parser import (  # noqa: E402
+    And, Call, Comparison, DistinctArg, Dur, Num, Ref, TermDef, parse_text,
+)
 from motifql.planner import compile_motif  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -192,3 +200,82 @@ def test_unordered_graph_disables_both_fast_paths() -> None:
         retention_s=g.retention_s)
     assert not bad.csr_ordered
     assert not M._graph_ok(bad) and not groups_fast.csr_time_ordered(bad)
+
+
+# -- find_all caps ----------------------------------------------------------------
+
+CAPS = [0, 1, 2, 2.5, 3.7, -1, -2.5, math.inf, -math.inf, math.nan, 10**30, 1e300,
+        np.int64(3), np.float64(2.5), True]
+
+
+@pytest.mark.parametrize("cap", CAPS, ids=repr)
+def test_find_all_odd_caps_match_pure(cap) -> None:
+    g_f = TemporalGraph.from_transfers(_frame(6, n_acc=5, n=300))
+    g_p = TemporalGraph.from_transfers(_frame(6, n_acc=5, n=300))
+    g_x = TemporalGraph.from_transfers(_frame(6, n_acc=5, n=300))  # uncapped census
+    motifs = [M.ROUND_TRIP, dataclasses.replace(M.ROUND_TRIP, max_expansions=40),
+              dataclasses.replace(M.LAYERING_CHAIN, min_hops=2, max_hops=4)]
+    many = False
+    for motif in motifs:
+        for a in range(0, g_f.n_edges, 4):
+            fast, pure = None, None
+            old = M.PURE_PYTHON
+            try:
+                M.PURE_PYTHON = False
+                fast = M.find_all(g_f, a, motif, cap=cap)
+                M.PURE_PYTHON = True
+                pure = M.find_all(g_p, a, motif, cap=cap)
+            finally:
+                M.PURE_PYTHON = old
+            assert fast == pure, (motif.name, a, cap)
+            many |= len(M._search_py(g_x, a, motif, True, math.inf)[0]) > 3
+    assert many, "no anchor had more witnesses than the small caps"
+    assert np.array_equal(g_f._in_lo, g_p._in_lo)
+
+
+def test_enum_cap_mirrors_the_pure_stop_rule() -> None:
+    ec = M._enum_cap
+    assert ec(2.5, True, 100) == 3 and ec(3, True, 100) == 3 and ec(0, True, 100) == 1
+    assert ec(-math.inf, True, 100) == 1
+    assert ec(math.inf, True, 100) == 101 and ec(math.nan, True, 100) == 101
+    assert ec(10**30, True, 100) == 101  # clamped: never reached, never allocated
+    assert ec(math.inf, True, 10**9) is None  # buffer too large: pure walk
+    assert ec(5, True, math.inf) is None  # non-int budget: pure walk
+    assert ec("5", True, 100) is None
+    assert ec(5, False, 100) == 1
+
+
+def test_find_all_huge_budget_and_infinite_cap_fall_back() -> None:
+    g = TemporalGraph.from_transfers(_frame(7, n_acc=5, n=200))
+    for motif, cap in ((dataclasses.replace(M.ROUND_TRIP, max_expansions=10**12), math.inf),
+                       (dataclasses.replace(M.ROUND_TRIP, max_expansions=math.inf), 10**30)):
+        for a in range(0, g.n_edges, 9):
+            fast, pure = _both(lambda: M.find_all(g, a, motif, cap=cap))
+            assert fast == pure
+
+
+# -- scatter count gate -----------------------------------------------------------
+
+def _count_having(op: str, lit) -> Comparison:
+    return Comparison(op, Call("count", (DistinctArg(Ref(("m",))),)), lit)
+
+
+@pytest.mark.parametrize("lit", [Num(2.0**63), Num(2.0**64 + 7), Num(1e300), Num(10**400),
+                                 Num(float(2**62)), Num(math.inf), Num(math.nan)], ids=repr)
+@pytest.mark.parametrize("op", [">=", ">"])
+def test_count_gate_clamps_huge_literals(doc, lit, op) -> None:
+    having = _count_having(op, lit)
+    assert groups_fast._count_gate(having, "m") == groups_fast._NEVER
+    assert groups_fast._count_gate(And((having,)), "m") == groups_fast._NEVER
+    plan = dataclasses.replace(compile_motif(doc, "scatter_gather"), having=having)
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame(8, n_acc=6, n=300))
+    fast, pure = _both(lambda: [_canon(groups.score_any(g, a, plan, libs))
+                                for a in range(g.n_edges)])
+    assert fast == pure
+    assert not any(k[0][1] for k in fast)  # found=False everywhere
+
+
+def test_count_gate_negative_huge_literal_is_no_gate() -> None:
+    assert groups_fast._count_gate(_count_having(">=", Num(-(10**400))), "m") == 0
+    assert groups_fast._count_gate(_count_having(">", Num(-1e300)), "m") == 0

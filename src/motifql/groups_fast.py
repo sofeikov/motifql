@@ -809,15 +809,22 @@ def _count_gate(having, var: str) -> int:
     if not isinstance(right, (Num, Dur, Money, Pct)):
         return 0
     try:
-        y = float(_g._lit(right))
+        lit = _g._lit(right)
     except (TypeError, ValueError):
         return 0
+    try:
+        y = float(lit)
+    except (TypeError, ValueError):
+        return 0
+    except OverflowError:  # an int literal past float range: sign decides
+        return _NEVER if lit > 0 else 0
     if math.isnan(y) or y == math.inf:
         return _NEVER
     if y == -math.inf:
         return 0
     k = math.ceil(y) if first.op == ">=" else math.floor(y) + 1
-    return max(int(k), 0)
+    # Clamp into int64 for the kernel: no member set reaches 2**62 either.
+    return min(max(int(k), 0), _NEVER)
 
 
 def _prep(plan) -> dict:
