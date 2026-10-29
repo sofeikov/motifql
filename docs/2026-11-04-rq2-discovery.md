@@ -285,6 +285,4 @@ motif-dataset cells favor fuzzy at budget 50, all converging at
 high budgets (LI numbers are unchanged from the pre-fix run — the
 old truncated fuzzy happened to rank the same hits). The 3/2
 round_trip cell sits in lottery noise (§3 caveat applies here
-too). LI has longer patterns and 1.8% layering truncation vs HI's
-0.9%, yet the edge survives — the ranking effect generalizes
-across simulator variants.
+too). The ranking effect generalizes across simulator variants.
