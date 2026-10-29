@@ -9,17 +9,22 @@ motif's emit threshold + background fire rate + mean top_score), so no
 full-day ranking is needed — this stays a targeted replay, not a batch.
 
 Perturbation semantics (pure function `perturb_frame`, unit-tested):
-* amount: member amount_usd *= 1 + U(-p, +p), seeded by transfer_id.
+* amount: member amount_usd *= 1 + U(-p, +p), drawn per transfer_id
+  from SeedSequence(seed, tid) — independent of which other
+  instances share the run.
 * gaps: per instance, t'_i = t_min + f * (t_i - t_min) in integer
   microseconds — within-instance order preserved by construction
   (ties stay tied), all within-instance gaps scale by f.
 * level (0, x1) is bit-identical to the base frame.
 
-No fitting happens here (robustness characterization, not model
-selection), so train+holdout instances are pooled for n; the RQ2
-recall table itself stays holdout-only. Members may drift into the
-tail under gap scaling — they are still scored by transfer_id, so no
-instance becomes uncatchable by construction.
+Pool (review #14.2): every TARGET-pattern instance with a member on
+a scored (train+holdout) day is perturbed whole, whatever its
+original split — restricting to train+holdout splits left most
+scored targets (partial/crosser members) clean. Splits are
+recomputed from the perturbed frame, so drifted instances
+reclassify instead of haunting the wrong denominator; transfer
+labels (is_laundering, pattern_type) are timeless. No fitting
+happens here (robustness characterization, not model selection).
 
 Usage:
     uv run eval/perturb.py --data data/hi-small --workers 16
@@ -44,27 +49,30 @@ from eval import evaluate, splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
-from motifql.planner import PathPlan, compile_motif  # noqa: E402
+from motifql.matcher import EXACT_FLOOR  # noqa: E402
+from motifql.planner import compile_motif  # noqa: E402
 
 log = logging.getLogger("perturb")
 
 LEVELS = [(0.0, 1.0), (0.05, 1.0), (0.10, 1.0), (0.20, 1.0), (0.0, 1.5), (0.0, 2.0)]
 TARGETS = {"round_trip": "CYCLE", "layering_chain": "RANDOM",
            "scatter_gather": "SCATTER-GATHER"}
-POOL = ("train", "holdout")
 BG_SEED = 7
 BG_N = 20000
 
 
 def perturb_frame(df: pl.DataFrame, inst_members: dict[int, list[int]],
                   amount_pct: float, gap_factor: float, seed: int) -> pl.DataFrame:
-    """Perturb member transfers; same row order, bit-identical at (0, x1)."""
+    """Perturb member transfers; same row order, bit-identical at (0, x1).
+
+    Amount draws are per transfer_id (SeedSequence(seed, tid)), so one
+    instance's noise never depends on which others share the run.
+    """
     member_ids = sorted({t for ts in inst_members.values() for t in ts})
     if not member_ids:
         return df
-    rng = np.random.default_rng(seed)
-    jolts = rng.uniform(-amount_pct, amount_pct, len(member_ids))
-    factor = dict(zip(member_ids, 1.0 + jolts))
+    factor = {t: 1.0 + float(np.random.default_rng([seed, int(t)]).uniform(
+        -amount_pct, amount_pct)) for t in member_ids}
     # Per-instance gap scaling in integer microseconds.
     ts_us = (df.select("transfer_id", "timestamp")
              .with_columns(pl.col("timestamp").dt.epoch(time_unit="us").alias("us")))
@@ -102,6 +110,21 @@ def _positions(sorted_ids: np.ndarray, want: list[int]) -> np.ndarray:
     return pos
 
 
+def _resplit(pdf: pl.DataFrame, memb: pl.DataFrame, inst: pl.DataFrame) -> pl.DataFrame:
+    """Instance splits recomputed from perturbed member timestamps.
+
+    Drifted instances reclassify (completable → partial, train →
+    crosser...) instead of haunting their original split's
+    denominator (review #14.2/#14.3). At level (0, x1) the frame is
+    bit-identical, so splits reproduce exactly.
+    """
+    spans = (memb.join(pdf.select("transfer_id", "timestamp"), on="transfer_id", how="left")
+             .group_by("instance_id").agg(pl.col("timestamp").min().alias("t_min"),
+                                           pl.col("timestamp").max().alias("t_max")))
+    inst2 = inst.drop("t_min", "t_max").join(spans, on="instance_id", how="left")
+    return splits.assign_instance_splits(inst2, memb, pdf)
+
+
 BUDGET_LEVELS = [(0.0, 1.0), (0.10, 1.0), (0.20, 1.0), (0.0, 2.0), (0.20, 2.0)]
 
 
@@ -134,6 +157,11 @@ def main(
               .select("transfer_id").to_series().to_list())
     bg_ids = sorted(np.random.default_rng(BG_SEED).choice(bg_ids, size=min(bg_n, len(bg_ids)),
                                                           replace=False).tolist())
+    # Pool-day member tids (original frame): an instance joins the
+    # pool when ANY member sits on a scored day, whatever its split.
+    pool_tids = set(pool.get_column("transfer_id").to_list())
+    mm_pat = memb.join(inst.select(["instance_id", "pattern_type"]),
+                       on="instance_id", how="left")
     log.info("  transfers %d, background sample %d", len(df), len(bg_ids))
 
     log.info("[2/3] compiling motifs")
@@ -147,13 +175,17 @@ def main(
         log.info("[3/3] level pct=%.2f gap=x%.1f: perturbing + rebuilding graph", pct, gf)
         target_members: dict[str, dict[int, list[int]]] = {}
         for m in motifs_wanted:
-            sub = inst.filter(pl.col("split").is_in(POOL)
-                              & (pl.col("pattern_type") == TARGETS[m]))
-            mm = memb.join(sub.select("instance_id"), on="instance_id", how="inner")
+            sub = mm_pat.filter(pl.col("pattern_type") == TARGETS[m])
+            touched = {int(i) for i, t in zip(sub["instance_id"].to_list(),
+                                              sub["transfer_id"].to_list())
+                       if int(t) in pool_tids}
             d: dict[int, list[int]] = {}
-            for iid, tid in zip(mm["instance_id"].to_list(), mm["transfer_id"].to_list()):
-                d.setdefault(int(iid), []).append(int(tid))
+            for iid, tid in zip(sub["instance_id"].to_list(), sub["transfer_id"].to_list()):
+                if int(iid) in touched:
+                    d.setdefault(int(iid), []).append(int(tid))
             target_members[m] = d
+            log.info("  %s: %d instances (%d members) touch scored days",
+                     m, len(d), sum(len(v) for v in d.values()))
         union: dict[int, list[int]] = {}
         for d in target_members.values():
             for iid, tids in d.items():
@@ -175,23 +207,22 @@ def main(
             for m in motifs_wanted:
                 plan = plans[m]
                 rq1._PLAN = plan
-                rq1._PRUNE, rq1._CRISP = True, True
-                cr_top, _, _, cr_tr = rq1._replay(hold_pos, workers, f"{m} crisp")
+                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+                cr_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} crisp")
                 scores[f"{m}__crisp"] = cr_top
-                if isinstance(plan, PathPlan):
-                    sub = np.flatnonzero((cr_top > 0) | cr_tr)
-                    fz_top = np.zeros(len(hold_pos))
-                    if len(sub):
-                        rq1._PRUNE, rq1._CRISP = False, False
-                        s, _, _, _ = rq1._replay(hold_pos[sub], workers, f"{m} fuzzy-sub")
-                        fz_top[sub] = s
-                else:
-                    rq1._PRUNE, rq1._CRISP = False, False
-                    fz_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} fuzzy")
+                # Exact branch-and-bound (review #14.1): no screen.
+                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+                fz_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} fuzzy")
                 scores[f"{m}__fuzzy"] = fz_top
             hold_base = evaluate.holdout_frame(
                 pdf, memb, inst, splits.HOLDOUT_START, splits.HOLDOUT_END, len(hold_pos))
-            btr, binst = evaluate.recall_at_budgets(hold_base, memb, inst, scores, budget_list)
+            # Splits from the perturbed frame (review #14.2/#14.3);
+            # pattern labels stay timeless. Log the completable mix
+            # so drift across levels is visible, not silent.
+            inst2 = _resplit(pdf, memb, inst)
+            n_comp = inst2.filter(pl.col("split") == "holdout").height
+            log.info("  holdout-completable instances after drift: %d", n_comp)
+            btr, binst = evaluate.recall_at_budgets(hold_base, memb, inst2, scores, budget_list)
             tag = {"amount_pct": pct, "gap_factor": gf}
             btr_rows.append(btr.with_columns(pl.lit(tag["amount_pct"]).alias("amount_pct"),
                                              pl.lit(tag["gap_factor"]).alias("gap_factor")))
@@ -211,18 +242,11 @@ def main(
             apos = _positions(tids, anchor_ids)
             apos_of = {t: i for i, t in enumerate(anchor_ids)}
             is_truth = np.array([t in truth_set for t in anchor_ids])
-            rq1._PRUNE, rq1._CRISP = True, True
-            cr_top, _, _, cr_tr = rq1._replay(apos, workers, f"{m} crisp")
-            if isinstance(plan, PathPlan):
-                sub = np.flatnonzero((cr_top > 0) | cr_tr)
-                fz_top = np.zeros(len(apos))
-                if len(sub):
-                    rq1._PRUNE, rq1._CRISP = False, False
-                    s_top, _, _, _ = rq1._replay(apos[sub], workers, f"{m} fuzzy-sub")
-                    fz_top[sub] = s_top
-            else:
-                rq1._PRUNE, rq1._CRISP = False, False
-                fz_top, _, _, _ = rq1._replay(apos, workers, f"{m} fuzzy")
+            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+            cr_top, _, _, _ = rq1._replay(apos, workers, f"{m} crisp")
+            # Exact branch-and-bound (review #14.1): no screen.
+            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+            fz_top, _, _, _ = rq1._replay(apos, workers, f"{m} fuzzy")
             emit = plan.emit
             inst_idx = {iid: np.array([apos_of[t] for t in tids_i])
                         for iid, tids_i in tm.items()}

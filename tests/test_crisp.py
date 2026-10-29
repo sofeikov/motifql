@@ -167,3 +167,147 @@ def test_butterfly_crisp() -> None:
     assert not fuzzy.found and fuzzy.top_score == pytest.approx(0.5)
     exact = score_butterfly(g, 3, plan, libs, crisp=True)
     assert exact.found and exact.score == pytest.approx(1.0)
+
+
+def _neg_pair():
+    leaf = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..2]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.gap is not soon"
+        + " score min emit when score >= 0.5 }")
+    expr = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..2]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft not each e: e.gap is soon"
+        + " score min emit when score >= 0.5 }")
+    return leaf, expr
+
+
+def test_crisp_negation_is_strong_and_consistent() -> None:
+    # Review #14.6: `is not T` ≡ `not (is T)` under crisp, with
+    # strong negation (crisp 1 iff the positive degree is exactly 0).
+    from motifql.degrees import libs_from_doc as _libs
+    leaf_doc, expr_doc = _neg_pair()
+    lp, ep = compile_motif(leaf_doc, "t"), compile_motif(expr_doc, "t")
+    assert ep.deferred is not None  # expression-Not goes through eval_soft
+    libs = _libs(leaf_doc)
+    cases = [
+        (27 * 60, 0.0),   # soon 0.5 -> strong-not 0
+        (50 * 60, 1.0),   # soon 0.0 -> strong-not 1
+        (3 * 60, 0.0),    # soon 1.0 -> strong-not 0
+    ]
+    for gap_min, want in cases:
+        g = TemporalGraph.from_transfers(_frame([
+            (0, "001", "B", "002", "A", 100.0),
+            (gap_min, "002", "A", "001", "B", 100.0),
+        ]))
+        a = score(g, 1, lp, libs, prune=False, crisp=True)
+        b = score(g, 1, ep, libs, prune=False, crisp=True)
+        assert a.top_score == pytest.approx(want)
+        assert b.top_score == pytest.approx(want)
+        fz_a = score(g, 1, lp, libs, prune=False)
+        fz_b = score(g, 1, ep, libs, prune=False)
+        assert fz_a.top_score == pytest.approx(fz_b.top_score)
+
+
+def test_crisp_deferred_some() -> None:
+    # Pins crisping inside the deferred path evaluator (eval_soft):
+    # `some` cannot prune (a partial max is a lower bound), so it is
+    # always deferred.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..2]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft some e: e.gap is soon"
+        + " score min emit when score >= 0.6 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    assert plan.deferred is not None
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "B", "002", "A", 100.0),
+        (27 * 60, "002", "A", "001", "B", 100.0),
+    ]))
+    fuzzy = score(g, 1, plan, libs, prune=False)
+    assert fuzzy.top_score == pytest.approx(0.5)
+    exact = score(g, 1, plan, libs, prune=False, crisp=True)
+    assert exact.top_score == pytest.approx(1.0)
+
+
+def test_crisp_deferred_span_leaves() -> None:
+    # Pins crisping of span-level deferred leaves (degrees._eval_term
+    # and the eval_soft Approx branch): 27h span, soon reads 0.5.
+    for soft, want in (("span(e) is soon", 0.5),
+                       ("span(e) ~= 24h within 12h", 0.75)):
+        doc = parse_text(
+            HEADER
+            + "motif t { match (a:account) -[e:transfer*2..2]-> (a)"
+            + " where e is time_ordered and span(e) <= 7d"
+            + f" soft {soft}"
+            + " score min emit when score >= 0.6 }")
+        plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+        assert plan.deferred is not None
+        g = TemporalGraph.from_transfers(_frame([
+            (0, "001", "B", "002", "A", 100.0),
+            (27 * 60, "002", "A", "001", "B", 100.0),
+        ]))
+        fuzzy = score(g, 1, plan, libs, prune=False)
+        assert fuzzy.top_score == pytest.approx(want)
+        exact = score(g, 1, plan, libs, prune=False, crisp=True)
+        assert exact.top_score == pytest.approx(1.0)
+
+
+def test_crisp_scatter_sum_balance() -> None:
+    # Pins crisping of group-mirror Approx leaves (sums balance 0.35).
+    doc = parse_text(
+        "term several = ramp(1, 3)\n"
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 2"
+        " soft count(distinct m) is several"
+        " and sum(leg2.amount) ~= sum(leg1.amount) within 20%"
+        " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame([
+        (10, "001", "S", "002", "M1", 100.0),
+        (20, "002", "M1", "003", "D", 100.0),
+        (12, "001", "S", "002", "M2", 100.0),
+        (25, "002", "M2", "003", "D", 130.0),
+    ]))
+    fuzzy = score_group(g, 3, plan, libs)
+    assert fuzzy.top_score == pytest.approx(1 - 30 / 46, abs=1e-9)
+    exact = score_group(g, 3, plan, libs, crisp=True)
+    assert exact.top_score == pytest.approx(1.0)
+
+
+def test_crisp_safety_predicates() -> None:
+    from motifql.degrees import crisp_binary_safe as bsafe
+    from motifql.degrees import crisp_differential_safe as dsafe
+    from motifql.parser import Comparison, Not, Num, Quantified, Ref
+    leaf = Comparison(">=", Ref(("e", "amount")), Num(1.0))
+    assert bsafe(leaf) and dsafe(leaf)
+    assert bsafe(Not(leaf)) and not dsafe(Not(leaf))
+    for q in ("each", "all", "some", "at_least:2", "all_but:1"):
+        n = Quantified(q, "e", leaf)
+        assert bsafe(n) and dsafe(n), q
+    for q in ("most", "few", "named:mostly"):
+        n = Quantified(q, "e", leaf)
+        assert not bsafe(n) and not dsafe(n), q
+    assert not bsafe(object()) and not dsafe(object())
+    # Plan level: reference motifs without most/few/not are in scope.
+    doc = parse_text(Path("examples/amlworld.motif").read_text())
+    for name in ("round_trip", "layering_chain", "fan_out", "fan_in",
+                 "scatter_gather", "gather_scatter", "bipartite_butterfly"):
+        plan = compile_motif(doc, name)
+        soft = getattr(plan, "soft", None)
+        if soft is None and hasattr(plan, "deferred"):
+            parts = [a for grp in plan.prunable for a in grp.atoms]
+            if plan.deferred is not None:
+                parts.append(plan.deferred)
+            assert all(dsafe(p) for p in parts), name
+        else:
+            assert soft is not None and dsafe(soft), name
+    structuring = compile_motif(doc, "structuring_fan_in")
+    assert not bsafe(structuring.soft) and not dsafe(structuring.soft)

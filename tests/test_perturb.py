@@ -56,6 +56,16 @@ def test_deterministic_and_seed_sensitive() -> None:
     assert (a["amount_usd"] != c["amount_usd"]).any()
 
 
+def test_draws_independent_of_union() -> None:
+    # Review #14 (lows): one instance's noise must not depend on
+    # which other instances share the run.
+    df = _toy()
+    alone = perturb_frame(df, {1: MEMBERS[1]}, 0.2, 1.0, 7)
+    together = perturb_frame(df, MEMBERS, 0.2, 1.0, 7)
+    for t in MEMBERS[1]:
+        assert alone.row(t) == together.row(t)
+
+
 def test_gaps_scale_and_order_holds() -> None:
     df = _toy()
     out = perturb_frame(df, MEMBERS, 0.0, 2.0, 1)

@@ -3,6 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 .env
-eval/results/cache/
-eval/results/*.csv
-eval/results/*.parquet
+eval/results/

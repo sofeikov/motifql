@@ -2,7 +2,7 @@
 """Discovery driver: miss tables, agent runs, holdout scoring (Nov 1).
 
 Builds a train-only DiscoveryCtx (member anchors + fixed background
-sample + current-motif scores via the crisp screen), prints per-pattern
+sample + current-motif scores via exact branch-and-bound), prints per-pattern
 miss tables, optionally runs the text-protocol agent on one pattern's
 missed cluster, and scores any gate-passing proposal on holdout
 members + a holdout background sample.
@@ -33,10 +33,11 @@ import eval.rq1 as rq1  # noqa: E402
 from eval import splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
+from motifql.matcher import EXACT_FLOOR  # noqa: E402
 from motifql.models import discovery as D  # noqa: E402
 from motifql.models import spark  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
-from motifql.planner import PathPlan, compile_motif  # noqa: E402
+from motifql.planner import compile_motif  # noqa: E402
 
 log = logging.getLogger("discover")
 
@@ -79,20 +80,13 @@ CLUSTER_NOTES = {
 
 def _batch_factory(workers: int, label: str):
     def batch(want, plan, libs):
+        # Exact branch-and-bound (review #14.1/#14.4): no crisp
+        # screen, so no monotonicity precondition — sound for every
+        # motif including not/few. Groups ignore prune/floor.
         want_arr = np.asarray(sorted(set(want)), dtype=np.int64)
         rq1._PLAN = plan
         rq1._LIBS = libs
-        if isinstance(plan, PathPlan):
-            rq1._PRUNE, rq1._CRISP = True, True
-            cr, _, _, cr_tr = rq1._replay(want_arr, workers, f"{label} crisp")
-            sub = np.flatnonzero((cr > 0) | cr_tr)
-            tops = np.zeros(len(want_arr))
-            if len(sub):
-                rq1._PRUNE, rq1._CRISP = False, False
-                s, _, _, _ = rq1._replay(want_arr[sub], workers, f"{label} fuzzy")
-                tops[sub] = s
-            return dict(zip(want_arr.tolist(), tops.tolist()))
-        rq1._PRUNE, rq1._CRISP = False, False
+        rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
         tops, _, _, _ = rq1._replay(want_arr, workers, f"{label} fuzzy")
         return dict(zip(want_arr.tolist(), tops.tolist()))
     return batch
@@ -101,7 +95,7 @@ def _batch_factory(workers: int, label: str):
 def main(
     data: Annotated[Path, typer.Option(help="Prepped dataset directory.")] = Path("data/hi-small"),
     run_agent: Annotated[bool, typer.Option(help="Run the agent loop (needs MUSE_KEY).")] = False,
-    pattern: Annotated[str, typer.Option(help="Target pattern for the agent run.")] = "SCATTER-GATHER",
+    pattern: Annotated[str, typer.Option(help="Target pattern for the agent run.")] = "FAN-OUT",
     max_steps: Annotated[int, typer.Option(help="Agent step budget.")] = D.MAX_STEPS,
     bg_n: Annotated[int, typer.Option(help="Background sample size.")] = BG_N,
     workers: Annotated[int, typer.Option(help="Worker processes (1 = serial).")] = 16,
@@ -201,13 +195,18 @@ def main(
                  f"({allowed * len(ctx.bg_pos):.0f}/{len(ctx.bg_pos)} on the sample; "
                  f"base median {med:.4f}). If no TRY passes both bars, reply DONE "
                  f"instead of proposing — a failing PROPOSE wastes the run.")
+    slug = pattern.lower().replace("-", "_")
+    live: list[str] = []
     try:
         res = D.run_agent(desc, cluster, ctx, MOTIFS, df, batch,
                           lambda messages: spark.complete(messages),
-                          max_steps=max_steps, gate_desc=gate_desc)
+                          max_steps=max_steps, gate_desc=gate_desc,
+                          transcript_out=live)
     except spark.SparkError as exc:
-        raise SystemExit(f"model call failed: {exc}") from exc
-    slug = pattern.lower().replace("-", "_")
+        (out / f"discover_{slug}_transcript.md").write_text(
+            "# Discovery transcript: " + pattern + " (INTERRUPTED)\n\n"
+            + "\n\n".join(live))
+        raise SystemExit(f"model call failed, partial transcript kept: {exc}") from exc
     (out / f"discover_{slug}_transcript.md").write_text(
         "# Discovery transcript: " + pattern + "\n\n" + "\n\n".join(res["transcript"])
         + "\n\n## Proposal\n\n"
@@ -254,6 +253,9 @@ def main(
     pl.from_dicts([{"motif": "PROPOSAL", "caught": len(caught), "n": len(ho_members),
                     "bg_fire": round(fire, 4)}] + base_rows
                   ).write_csv(out / f"discover_{slug}_holdout.csv")
+    best_base = max([r["caught"] for r in base_rows] or [0])
+    log.info("  gain vs best current motif: %+d instances (%d vs %d)",
+             len(caught) - best_base, len(caught), best_base)
     log.info("done")
 
 

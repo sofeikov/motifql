@@ -111,8 +111,56 @@ def tol_degree(tol: object, x: float, y: float) -> float:
 
 def crisp_degree(d: float, crisp: bool) -> float:
     """Support-boundary threshold for RQ2 exact runs: with crisp=True a
-    leaf degree becomes 1.0 iff it is positive, else 0.0; else identity."""
+    leaf degree becomes 1.0 iff it is positive, else 0.0; else identity.
+    Negation is strong everywhere (`is not T` ≡ `not (is T)`): leaves
+    negate after crisping, and `not` negates the crisped child."""
     return (1.0 if d > 0.0 else 0.0) if crisp else d
+
+
+_CRISP_ORDER_QUANTS = ("each", "all", "some")
+
+
+def crisp_binary_safe(expr: object) -> bool:
+    """True when crisp scores of `expr` are always binary.
+
+    Mean-grading quantifiers (`most`, `few`, `@named`) still grade
+    under crisp, so any use makes the score fractional. Everything
+    else (order quantifiers, And/Or/Not, all leaves) stays binary.
+    Unknown nodes fail closed.
+    """
+    if isinstance(expr, (And, Or)):
+        return all(crisp_binary_safe(i) for i in expr.items)
+    if isinstance(expr, Not):
+        return crisp_binary_safe(expr.body)
+    if isinstance(expr, Quantified):
+        q = expr.quant
+        if q in _CRISP_ORDER_QUANTS or q.startswith("at_least:") or q.startswith("all_but:"):
+            return crisp_binary_safe(expr.body)
+        return False
+    if isinstance(expr, (Approx, IsTerm, Comparison, GapTermCond, AmountConsCond)):
+        return True
+    return False
+
+
+def crisp_differential_safe(expr: object) -> bool:
+    """True when crisp>0 ⟺ fuzzy>0 over `expr` (review #14.6).
+
+    Needs binary-safety plus no `not`: strong negation gives
+    crisp=1 ⟺ fuzzy=0 while fuzzy(not E)>0 ⟺ fuzzy(E)<1, so the
+    differential fails across any negation. Unknown nodes fail closed.
+    """
+    if isinstance(expr, Not):
+        return False
+    if isinstance(expr, (And, Or)):
+        return all(crisp_differential_safe(i) for i in expr.items)
+    if isinstance(expr, Quantified):
+        q = expr.quant
+        if q in _CRISP_ORDER_QUANTS or q.startswith("at_least:") or q.startswith("all_but:"):
+            return crisp_differential_safe(expr.body)
+        return False
+    if isinstance(expr, (Approx, IsTerm, Comparison, GapTermCond, AmountConsCond)):
+        return True
+    return False
 
 
 def step_degrees(atom, gap_s: float | None, amount: float,
@@ -124,12 +172,14 @@ def step_degrees(atom, gap_s: float | None, amount: float,
             return None
         tdef = term_defs[atom.term]
         deg = term_degree(tdef.shape, resolve_term_args(atom.term, atom.term_args, term_defs), gap_s)
-        return crisp_degree(1.0 - deg if atom.negated else deg, crisp)
+        # Strong negation: negate the crisped leaf, so `is not T` ≡
+        # `not (is T)` under crisp (review #14.6).
+        return 1.0 - crisp_degree(deg, crisp) if atom.negated else crisp_degree(deg, crisp)
     if isinstance(atom, AmountConsCond):
         if prev_amount is None:
             return None
         deg = tol_degree(atom.tol, amount, prev_amount)
-        return crisp_degree(1.0 - deg if atom.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if atom.negated else crisp_degree(deg, crisp)
     raise ValueError(f"not a prunable atom: {atom!r}")
 
 
@@ -254,7 +304,7 @@ def _eval_step(node: object, vals: dict, pvals: dict | None,
             return None
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
-        return crisp_degree(1.0 - deg if node.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     if isinstance(node, Approx):
         x = _resolve_arith(node.left, vals, pvals)
         y = _resolve_arith(node.right, vals, pvals)
@@ -305,7 +355,7 @@ def _eval_term(node: IsTerm, steps: list[int], graph, libs,
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs),
                           float(times[-1] - times[0]))
-        return crisp_degree(1.0 - deg if node.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     raise ValueError(f"cannot evaluate term use: {node!r}")
 
 

@@ -2,10 +2,14 @@
 """RQ2 harness: fuzzy vs exact (crisp) recall at fixed alert budgets (Nov 1).
 
 Level-0 table: replays the fuzzy-sensitive motifs (round_trip,
-layering_chain, scatter_gather) over the holdout split twice — fuzzy
-unpruned (ranking needs sub-emit top_scores) and crisp pruned (exact
-arm: binary scores, so every crisp-1 witness completes under pruning;
---verify-prune checks pruned == unpruned on a sample empirically).
+layering_chain, scatter_gather) over the holdout split twice, both
+pruned — crisp from emit (exact arm: binary scores, every crisp-1
+witness completes) and fuzzy from EXACT_FLOOR (branch-and-bound for
+the exact best witness; unpruned search truncates and loses
+positives). --verify-prune checks pruned ⊇ unpruned on a seeded
+spread sample. Binarity/differential asserts are scoped per motif
+by the safety predicates (most/few/named grade under crisp;
+`not` breaks the differential) and decided before any replay.
 
 Ranking and recall go through the shared `eval/evaluate.py` protocol
 at the RQ1 budgets, so the rows are comparable by construction. The
@@ -34,8 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import eval.rq1 as rq1  # noqa: E402
 from eval import evaluate, splits  # noqa: E402
-from motifql.degrees import libs_from_doc  # noqa: E402
+from motifql.degrees import crisp_binary_safe, crisp_differential_safe, libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
+from motifql.matcher import EXACT_FLOOR  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import PathPlan, compile_motif  # noqa: E402
 
@@ -81,110 +86,113 @@ def main(
     # true per-anchor cost in rq2_summary.csv instead.
     plans = {m: compile_motif(doc, m) for m in motifs_wanted}
 
+    # Check scope per motif, decided BEFORE any replay (review
+    # #14.6 + Codex P2): binarity needs no mean-grading quants, the
+    # differential additionally no `not`. Out-of-scope checks are
+    # skipped with a log line, never abort after a full replay.
+    scopes: dict[str, tuple[bool, bool]] = {}
+    for name, plan in plans.items():
+        if isinstance(plan, PathPlan):
+            parts: list = [a for grp in plan.prunable for a in grp.atoms]
+            if plan.deferred is not None:
+                parts.append(plan.deferred)
+        else:
+            parts = [plan.soft] if plan.soft is not None else []
+        scopes[name] = (all(crisp_binary_safe(p) for p in parts),
+                        all(crisp_differential_safe(p) for p in parts))
+        log.info("  %s: checks binary=%s differential=%s", name, *scopes[name])
+
     rq1._GRAPH, rq1._LIBS = graph, libs
     scored: dict[str, dict[str, np.ndarray]] = {}
     summary_rows: list[dict] = []
-    log.info("[3/4] replaying holdout: crisp pruned full, fuzzy via screen")
+    log.info("[3/4] replaying holdout: crisp pruned, fuzzy exact floor")
     for name, plan in plans.items():
         rq1._PLAN = plan
-        # Crisp arm first, full holdout, pruned. Every crisp-1 witness
-        # completes under pruning (all its leaves read 1 along the
-        # way), so pruned == unpruned for the crisp arm.
-        rq1._PRUNE, rq1._CRISP = True, True
+        # Crisp arm, pruned from emit: every crisp-1 witness completes
+        # (all its leaves read 1 along the way).
+        rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
         cr_top, cr_found, cr_exps, cr_tr = rq1._replay(hold_pos, workers, f"{name} crisp")
-        if isinstance(plan, PathPlan):
-            # Two-phase fuzzy: the crisp screen is exact on completed
-            # anchors (crisp 0 + completed ⟹ no all-positive-leaf
-            # witness exists ⟹ fuzzy top is 0), so only crisp-positive
-            # or crisp-truncated anchors earn a fuzzy replay. Unpruned
-            # *5..8 costs ~10ms/anchor and truncates ~5%; the screen
-            # cuts the full replay to a few hundred anchors.
-            sub_idx = np.flatnonzero((cr_top > 0) | cr_tr)
-            fz_top = np.zeros(len(hold_pos))
-            fz_found = np.zeros(len(hold_pos), dtype=bool)
-            fz_exps = np.zeros(len(hold_pos))
-            fz_tr = np.zeros(len(hold_pos), dtype=bool)
-            if len(sub_idx):
-                rq1._PRUNE, rq1._CRISP = False, False
-                s_top, s_found, s_exps, s_tr = rq1._replay(
-                    hold_pos[sub_idx], workers, f"{name} fuzzy-sub")
-                fz_top[sub_idx], fz_found[sub_idx] = s_top, s_found
-                fz_exps[sub_idx], fz_tr[sub_idx] = s_exps, s_tr
-        else:
-            # Group executors never prune: run the fuzzy arm fully.
-            rq1._PRUNE, rq1._CRISP = False, False
-            fz_top, fz_found, fz_exps, fz_tr = rq1._replay(
-                hold_pos, workers, f"{name} fuzzy")
+        # Fuzzy arm, branch-and-bound from ~0: exact best witness
+        # (mod 1e-12) without unpruned search, which truncates and
+        # LOSES positives (review #14.1). Groups ignore prune/floor
+        # and are exact by construction.
+        rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+        fz_top, fz_found, fz_exps, fz_tr = rq1._replay(hold_pos, workers, f"{name} fuzzy")
         arms = {"fuzzy": {"top": fz_top, "found": fz_found},
                 "crisp": {"top": cr_top, "found": cr_found}}
         scored[name] = arms
-        all_idx = np.arange(len(hold_pos))
-        for arm, top, found, exps, trunc, ridx in (
-                ("fuzzy", fz_top, fz_found, fz_exps, fz_tr,
-                 sub_idx if isinstance(plan, PathPlan) else all_idx),
-                ("crisp", cr_top, cr_found, cr_exps, cr_tr, all_idx)):
-            # Expansions average over replayed anchors only (shortcut
-            # anchors cost nothing, so including them would lie down).
-            exps_mean = float(exps[ridx].mean()) if len(ridx) else 0.0
-            replayed = len(ridx)
+        for arm, top, found, exps, trunc in (
+                ("fuzzy", fz_top, fz_found, fz_exps, fz_tr),
+                ("crisp", cr_top, cr_found, cr_exps, cr_tr)):
             summary_rows.append({
                 "motif": name, "arm": arm, "anchors": len(top),
-                "replayed": replayed,
                 "fires": int(found.sum()), "fires_per_day": float(found.sum()) / n_ho_days,
                 "nonzero": int((top > 0).sum()),
                 "nonzero_per_day": float((top > 0).sum()) / n_ho_days,
                 "top_p50": float(np.percentile(top, 50)),
                 "top_p99": float(np.percentile(top, 99)),
                 "top_p999": float(np.percentile(top, 99.9)),
-                "mean_expansions": exps_mean,
+                "mean_expansions": float(exps.mean()),
                 "truncated_rate": float(trunc.mean()),
             })
             log.info("  %s %s: fires %d (%.1f/day) nonzero %.1f/day "
-                     "mean expansions %.1f truncated %.2f%% replayed %d",
+                     "mean expansions %.1f truncated %.2f%%",
                      name, arm, int(found.sum()), found.sum() / n_ho_days,
-                     (top > 0).sum() / n_ho_days, exps_mean,
-                     100 * trunc.mean(), replayed)
+                     (top > 0).sum() / n_ho_days, float(exps.mean()),
+                     100 * trunc.mean())
 
-        # Crisp differential, scoped to anchors where both arms
-        # completed: binary scores, positive exactly where the fuzzy
-        # top is positive. Truncation strikes the two searches
-        # differently (unpruned fuzzy truncates far more), so anchors
-        # where either truncated are reported, not asserted.
-        nonbinary = int(((cr_top > 0) & (cr_top < 1)).sum())
-        both_ok = ~cr_tr & ~fz_tr
-        mismatch = int((((cr_top > 0) != (fz_top > 0)) & both_ok).sum())
-        trunc_mm = int((((cr_top > 0) != (fz_top > 0)) & ~both_ok).sum())
-        log.info("  %s differential: nonbinary=%d mismatch=%d "
-                 "(+%d on truncated anchors)", name, nonbinary, mismatch, trunc_mm)
-        if nonbinary or mismatch:
-            raise SystemExit(f"crisp differential failed for {name}: "
-                             f"nonbinary={nonbinary} mismatch={mismatch}")
+        # Crisp differential on anchors where both arms completed.
+        # Truncation can still strike the two searches differently,
+        # so truncated anchors are reported, not asserted.
+        binary_ok, diff_ok = scopes[name]
+        if binary_ok:
+            nonbinary = int(((cr_top > 0) & (cr_top < 1)).sum())
+            if nonbinary:
+                raise SystemExit(f"crisp nonbinary for {name}: {nonbinary}")
+            log.info("  %s binary check: clean", name)
+        else:
+            log.info("  %s binary check: skipped (mean-grading quantifiers)", name)
+        if diff_ok:
+            both_ok = ~cr_tr & ~fz_tr
+            mismatch = int((((cr_top > 0) != (fz_top > 0)) & both_ok).sum())
+            trunc_mm = int((((cr_top > 0) != (fz_top > 0)) & ~both_ok).sum())
+            log.info("  %s differential: mismatch=%d (+%d on truncated)",
+                     name, mismatch, trunc_mm)
+            if mismatch:
+                raise SystemExit(f"crisp differential failed for {name}: {mismatch}")
+        else:
+            log.info("  %s differential: skipped (not/mean-grading present)", name)
 
         if 0 < verify_prune <= len(hold_pos):
-            sub = hold_pos[:verify_prune]
-            rq1._PRUNE, rq1._CRISP = True, True
-            cr_sub, _, _, _ = rq1._replay(sub, min(workers, 4), f"{name} verify-cp")
-            rq1._PRUNE, rq1._CRISP = False, True
-            cu_sub, _, _, cu_tr = rq1._replay(sub, min(workers, 4), f"{name} verify-cu")
-            # Pruning only skips zero-leaf branches and truncates less
-            # (subset of expansions), so pruned ⊇ unpruned: every
-            # unpruned-1 must be pruned-1. The reverse direction may
-            # differ exactly where unpruned truncated.
-            lost = int(((cu_sub > 0) & ~(cr_sub > 0)).sum())
-            gained_trunc = int(((cr_sub > 0) & ~(cu_sub > 0) & cu_tr).sum())
-            gained_ok = int(((cr_sub > 0) & ~(cu_sub > 0) & ~cu_tr).sum())
-            if lost or gained_ok:
-                raise SystemExit(f"crisp prune check failed for {name}: "
-                                 f"lost={lost} gained_completed={gained_ok}")
-            log.info("  %s verify: pruned superset holds (+%d on unpruned-truncated)",
-                     name, gained_trunc)
-            # Fuzzy shortcut check: direct unpruned tops on the sample
-            # must equal the two-phase assembly (deterministic per
-            # anchor, so truncation included).
-            rq1._PRUNE, rq1._CRISP = False, False
+            # Seeded spread sample (review #14.5): the old head slice
+            # covered 24 minutes with single-digit positives.
+            vs = np.sort(np.random.default_rng(999).choice(
+                len(hold_pos), size=verify_prune, replace=False))
+            sub = hold_pos[vs]
+            if isinstance(plan, PathPlan):
+                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+                cr_sub, _, _, _ = rq1._replay(sub, min(workers, 4), f"{name} verify-cp")
+                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = False, True, None
+                cu_sub, _, _, cu_tr = rq1._replay(sub, min(workers, 4), f"{name} verify-cu")
+                # Pruning only skips zero-leaf branches and truncates
+                # less (subset of expansions), so pruned ⊇ unpruned:
+                # every unpruned-1 must be pruned-1. The reverse may
+                # differ exactly where unpruned truncated.
+                lost = int(((cu_sub > 0) & ~(cr_sub > 0)).sum())
+                gained_ok = int(((cr_sub > 0) & ~(cu_sub > 0) & ~cu_tr).sum())
+                if lost or gained_ok:
+                    raise SystemExit(f"crisp prune check failed for {name}: "
+                                     f"lost={lost} gained_completed={gained_ok}")
+                log.info("  %s verify: pruned superset holds (%d positives in slice)",
+                         name, int((cr_sub > 0).sum()))
+            else:
+                log.info("  %s verify: prune check skipped (groups never prune)", name)
+            # Determinism pin: same computation, different pool
+            # sharding, must agree exactly.
+            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
             fz_sub, _, _, _ = rq1._replay(sub, min(workers, 4), f"{name} verify-fz")
-            if not np.array_equal(fz_sub, fz_top[:verify_prune]):
-                raise SystemExit(f"fuzzy shortcut disagrees for {name}")
+            if not np.array_equal(fz_sub, fz_top[vs]):
+                raise SystemExit(f"fuzzy rerun not deterministic for {name}")
             log.info("  %s verify: %d-anchor sample agrees", name, verify_prune)
 
     pl.from_dicts(summary_rows).write_csv(out / "rq2_summary.csv")

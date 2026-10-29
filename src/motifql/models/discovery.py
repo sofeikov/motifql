@@ -82,7 +82,7 @@ def try_motif(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int]) -> 
     """Compile + train replay: recall on the cluster, bg fire, FP sample.
 
     `batch_score(positions, plan, libs)` returns {pos: top_score};
-    batching lets the driver screen (crisp first, fuzzy refine).
+    batching lets the driver score thousands of anchors per call.
     """
     compiled, errors = repair.try_compile(text)
     if compiled is None:
@@ -143,35 +143,42 @@ def gate(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int],
                       catches, bg_fire)
 
 
-_ACTION = re.compile(r"\b(SHOW|TRY|PROPOSE|DONE)\b", re.IGNORECASE)
+_ACTION = re.compile(r"\b(SHOW|TRY|PROPOSE|DONE)\b")
 _FENCE = re.compile(r"```motifql\s*(.*?)```", re.IGNORECASE | re.DOTALL)
-_SHOW_ID = re.compile(r"SHOW\s+(\d+)", re.IGNORECASE)
+_SHOW_ID = re.compile(r"SHOW\s+(\d+)")
 
 
 def parse_action(text: str):
     """One action per model turn: (kind, motif_text_or_None, instance_id_or_None).
 
-    The keyword may be glued to prose ("...them.SHOW 123"), so the
-    LAST keyword anywhere wins — the model thinks first, acts last.
-    A ```motifql fence means TRY/PROPOSE even if prose after it
-    mentions done/show ("RATIONALE: this is done").
+    Keywords are UPPERCASE (the prompt shows them that way; every live
+    reply complies), so lowercase prose can never trigger an action
+    ("my last try", "once done" parse as nothing). Matches inside
+    ```motifql fences are ignored. A fenced motif is unambiguous
+    intent, so with a fence present the last TRY/PROPOSE wins over
+    trailing prose keywords ("RATIONALE: ALL DONE"); otherwise the
+    LAST keyword wins. The SHOW id / motif block must come AFTER
+    the winning keyword.
     """
-    ms = list(_ACTION.finditer(text))
-    if not ms:
+    spans = [m.span() for m in _FENCE.finditer(text)]
+    cands = [m for m in _ACTION.finditer(text)
+             if not any(a < m.start() < b for a, b in spans)]
+    if not cands:
         return None, None, None
-    if _FENCE.search(text):
-        fenced = [m for m in ms if m.group(1).upper() in ("TRY", "PROPOSE")]
+    if spans:
+        fenced = [m for m in cands if m.group(1) in ("TRY", "PROPOSE")]
         if fenced:
-            kind = fenced[-1].group(1).upper()
-            mm = _FENCE.search(text)
-            return kind, mm.group(1).strip() if mm else None, None
-    kind = ms[-1].group(1).upper()
+            cands = fenced
+    win = cands[-1]
+    kind = win.group(1)
     if kind == "SHOW":
-        mm = _SHOW_ID.search(text)
+        mm = _SHOW_ID.search(text, win.start())
         return kind, None, int(mm.group(1)) if mm else None
     if kind in ("TRY", "PROPOSE"):
-        mm = _FENCE.search(text)
-        return kind, mm.group(1).strip() if mm else None, None
+        for fm in _FENCE.finditer(text):
+            if fm.start() > win.start():
+                return kind, fm.group(1).strip(), None
+        return kind, None, None
     return kind, None, None
 
 
@@ -184,50 +191,62 @@ def agent_system_prompt(cluster_desc: str, gate_desc: str = "") -> str:
             "TRY then a ```motifql block (motif `cand`) — compile + train replay.\n"
             "PROPOSE then a ```motifql block + RATIONALE: — final proposal.\n"
             "DONE — stop (use when nothing beats the gate).\n"
-            "Put the keyword (SHOW/TRY/PROPOSE/DONE) AFTER any thinking text.\n"
+            "Put the keyword (SHOW/TRY/PROPOSE/DONE, in capitals) AFTER any thinking text.\n"
             "Rules: train data only (you never see holdout); name the motif "
             "`cand`; every TRY/PROPOSE is scored and the numbers come back.")
 
 
 def run_agent(cluster_desc: str, cluster: list[int], ctx: DiscoveryCtx,
               motifs: list[str], df, batch_score, complete,
-              max_steps: int = MAX_STEPS, gate_desc: str = "") -> dict:
-    """Text-protocol agent loop; returns transcript + best proposal."""
+              max_steps: int = MAX_STEPS, gate_desc: str = "",
+              transcript_out: list | None = None) -> dict:
+    """Text-protocol agent loop; returns transcript + best proposal.
+
+    Steps append to `transcript_out` live when given, so the driver
+    can persist a partial transcript if the run dies mid-loop.
+    """
     messages = [{"role": "system", "content": agent_system_prompt(cluster_desc, gate_desc)},
                 {"role": "user", "content": f"Missed cluster ({len(cluster)} instances): "
                                             f"{cluster}. Start with SHOW."}]
-    transcript: list[str] = []
+    transcript: list[str] = transcript_out if transcript_out is not None else []
     best = {"text": None, "gate": None}
     for step in range(max_steps):
         text, _ = complete(messages)
         transcript.append(f"--- step {step} model ---\n{text}")
         kind, motif_text, iid = parse_action(text)
-        if kind == "SHOW" and iid in ctx.member_tid:
-            result = show_instance(ctx, df, iid, motifs)
-        elif kind == "SHOW":
-            result = f"unknown instance {iid}; cluster is {cluster}."
-        elif kind == "TRY" and motif_text:
-            result = try_motif(ctx, motif_text, batch_score, cluster)
-        elif kind in ("TRY", "PROPOSE") and not motif_text:
-            result = "no ```motifql block found; send the motif in one."
-        elif kind == "PROPOSE":
-            g = gate(ctx, motif_text or "", batch_score, cluster, motifs)
-            result = f"GATE {'PASS' if g.passed else 'FAIL'}: {g.detail}"
-            if g.passed and (best["text"] is None
-                             or len(g.catches) > len(best["gate"].catches)):
-                best = {"text": motif_text, "gate": g}
-            transcript.append(f"--- step {step} tool ---\n{result}")
-            messages = messages + [{"role": "assistant", "content": text},
-                                   {"role": "user", "content": result}]
-            if g.passed:
-                break
-            continue
-        elif kind == "DONE":
-            transcript.append(f"--- step {step} tool ---\nnoted.")
-            break
-        else:
-            result = "no action parsed; reply SHOW / TRY / PROPOSE / DONE."
+        try:
+            result, g = _dispatch(kind, motif_text, iid, ctx, motifs, df,
+                                  batch_score, cluster)
+        except Exception as exc:
+            # Fail closed: a tool crash becomes feedback, never an
+            # escaped exception (and never a silent holdout read).
+            result, g = f"tool error: {type(exc).__name__}: {exc}"[:500], None
+        if kind == "PROPOSE" and g is not None and g.passed and (
+                best["text"] is None or len(g.catches) > len(best["gate"].catches)):
+            best = {"text": motif_text, "gate": g}
+        if step == max_steps - 2 and kind not in ("PROPOSE", "DONE"):
+            result += "\nNEXT IS YOUR LAST STEP: reply PROPOSE or DONE."
         transcript.append(f"--- step {step} tool ---\n{result}")
         messages = messages + [{"role": "assistant", "content": text},
                                {"role": "user", "content": result}]
+        if kind == "DONE" or (kind == "PROPOSE" and g is not None and g.passed):
+            break
     return {"transcript": transcript, "proposal": best["text"], "gate": best["gate"]}
+
+
+def _dispatch(kind, motif_text, iid, ctx, motifs, df, batch_score, cluster):
+    """Execute one parsed action; returns (result_text, gate_or_None)."""
+    if kind == "SHOW" and iid in ctx.member_tid:
+        return show_instance(ctx, df, iid, motifs), None
+    if kind == "SHOW":
+        return f"unknown instance {iid}; cluster is {cluster}.", None
+    if kind == "TRY" and motif_text:
+        return try_motif(ctx, motif_text, batch_score, cluster), None
+    if kind in ("TRY", "PROPOSE") and not motif_text:
+        return "no ```motifql block found; send the motif in one.", None
+    if kind == "PROPOSE":
+        g = gate(ctx, motif_text or "", batch_score, cluster, motifs)
+        return f"GATE {'PASS' if g.passed else 'FAIL'}: {g.detail}", g
+    if kind == "DONE":
+        return "noted.", None
+    return "no action parsed; reply SHOW / TRY / PROPOSE / DONE.", None

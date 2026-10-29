@@ -261,7 +261,7 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
     if isinstance(base, Call) and base.name == "span":
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, ctx.span)
-        return crisp_degree(1.0 - deg if node.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     if isinstance(base, Call):
         vals = _edge_values(base, ctx)
         x = float(vals[0]) if vals else 0.0
@@ -277,7 +277,7 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
             x = float(max(vals)) if vals else 0.0
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, x)
-        return crisp_degree(1.0 - deg if node.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     raise ValueError(f"cannot evaluate group term use: {node!r}")
 
 
@@ -354,7 +354,7 @@ def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str,
             return None
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
-        return crisp_degree(1.0 - deg if node.negated else deg, crisp)
+        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
     if isinstance(node, Comparison):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
@@ -782,7 +782,7 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
             return 1.0
         tdef, targs, negated = grade
         d = term_degree(tdef.shape, targs, span_s)
-        return crisp_degree(1.0 - d if negated else d, crisp)
+        return 1.0 - crisp_degree(d, crisp) if negated else crisp_degree(d, crisp)
 
     def _realize(lst: list[int], t: int) -> int:
         # One leg with the binding's min time t: prefer an edge exactly at
@@ -836,21 +836,25 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
 # -- dispatch --------------------------------------------------------------
 
 def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
-              crisp: bool = False):
+              crisp: bool = False, floor: float | None = None):
     """Score one anchor against any Oct 30 plan type.
 
-    Ranking callers must pass `prune=False`: under pruning a path
-    motif's top_score can only be 0 or >= emit, so every below-emit
-    anchor ties at 0 instead of ranking by its best witness.
-    With crisp=True every soft leaf is support-thresholded (RQ2 exact
-    arm); path pruning stays sound because crisp degrees still bound
-    their completions.
+    Ranking callers want exact top_scores: pass `floor=EXACT_FLOOR`
+    (branch-and-bound from ~0, exact mod 1e-12) instead of
+    `prune=False`, which additionally risks truncation. Under default
+    pruning a path motif's top_score can only be 0 or >= emit, so
+    every below-emit anchor ties at 0 instead of ranking by its best
+    witness. With crisp=True every soft leaf is support-thresholded
+    (RQ2 exact arm); path pruning stays sound because crisp degrees
+    still bound their completions. `floor` is path-only (groups
+    never prune) and `found` still uses the emit threshold.
     """
     from motifql import planner as _planner
 
     if isinstance(plan, _planner.PathPlan):
         from motifql.matcher import score as _path_score
-        return _path_score(graph, anchor_pos, plan, libs, prune=prune, crisp=crisp)
+        return _path_score(graph, anchor_pos, plan, libs, prune=prune, crisp=crisp,
+                           floor=floor)
     if isinstance(plan, _planner.GroupPlan):
         return score_group(graph, anchor_pos, plan, libs, crisp=crisp)
     if isinstance(plan, _planner.ButterflyPlan):

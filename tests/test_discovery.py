@@ -38,7 +38,7 @@ def _ctx() -> D.DiscoveryCtx:
 
 def test_parse_action() -> None:
     assert D.parse_action("SHOW 12") == ("SHOW", None, 12)
-    assert D.parse_action("show 7 please")[0] == "SHOW"
+    assert D.parse_action("SHOW 223SHOW 223") == ("SHOW", None, 223)
     kind, motif, _ = D.parse_action("TRY\n```motifql\n" + MOTIF + "\n```")
     assert (kind, motif) == ("TRY", MOTIF)
     assert D.parse_action("TRY with no block") == ("TRY", None, None)
@@ -53,6 +53,23 @@ def test_parse_action() -> None:
     kind, motif, _ = D.parse_action(
         "PROPOSE\n```motifql\n" + MOTIF + "\n```\nRATIONALE: this is done")
     assert (kind, motif) == ("PROPOSE", MOTIF)
+
+
+def test_parse_action_ignores_lowercase_prose() -> None:
+    # Review #14.9: lowercase prose must never trigger an action, and
+    # a fenced motif beats trailing uppercase commentary.
+    assert D.parse_action("my last try") == (None, None, None)
+    assert D.parse_action("once done, more checks") == (None, None, None)
+    assert D.parse_action("show 7 please") == (None, None, None)
+    kind, motif, _ = D.parse_action(
+        "PROPOSE\n```motifql\n" + MOTIF + "\n```\nRATIONALE: ALL DONE")
+    assert (kind, motif) == ("PROPOSE", MOTIF)
+    # Fence before the keyword is not its block.
+    assert D.parse_action("```motifql\n" + MOTIF + "\n```\nTRY again") == ("TRY", None, None)
+    # Keyword-looking text inside the fence is ignored.
+    kind, motif, _ = D.parse_action(
+        "TRY\n```motifql\n" + MOTIF + " // DONE\n```")
+    assert (kind, motif) == ("TRY", MOTIF + " // DONE")
 
 
 def test_list_missed() -> None:
@@ -84,6 +101,11 @@ def test_gate_pass_and_fail_modes() -> None:
     assert not g.passed and "bg fire" in g.detail
     g = D.gate(ctx, "motif cand { nonsense", run(hi), [1, 2], ["m0"])
     assert not g.passed and "does not compile" in g.detail
+    # Floor pin: base median is 0, but 2/4 background fires (the floor)
+    # still passes while 3/4 fails.
+    warm = {**hi, 4: 0.9, 5: 0.9}
+    g = D.gate(ctx, MOTIF, run(warm), [1, 2], ["m0"])
+    assert g.passed
 
 
 def test_run_agent_passes_proposal_and_stays_in_ctx() -> None:
@@ -120,3 +142,30 @@ def test_run_agent_done_stops() -> None:
     out = D.run_agent("test", [1], ctx, ["m0"], pl.DataFrame(),
                       lambda w, p, l: {}, lambda messages: ("DONE", {}))
     assert out["proposal"] is None and len(out["transcript"]) == 2
+
+
+def test_run_agent_fails_closed_on_unknown_instance() -> None:
+    # Discriminating guard: a cluster id outside the ctx must become
+    # feedback, never an escaped exception or an out-of-ctx query.
+    ctx = _ctx()
+    replies = ["SHOW 999", "TRY\n```motifql\n" + MOTIF + "\n```", "DONE"]
+    queried: set[int] = set()
+
+    def batch(want, plan, libs):
+        queried.update(want)
+        return {p: 0.0 for p in want}
+
+    out = D.run_agent("test", [999], ctx, ["m0"], pl.DataFrame(), batch,
+                      lambda messages: (replies.pop(0), {}), max_steps=3)
+    assert any("unknown instance 999" in t for t in out["transcript"])
+    assert any("tool error" in t for t in out["transcript"])
+    assert out["proposal"] is None
+    assert queried <= {0, 1, 2, 3, 4, 5, 6, 7}
+
+
+def test_run_agent_nudges_final_turn() -> None:
+    ctx = _ctx()
+    out = D.run_agent("test", [1], ctx, ["m0"], pl.DataFrame(),
+                      lambda w, p, l: {p: 0.0 for p in w},
+                      lambda messages: ("SHOW 1", {}), max_steps=2)
+    assert any("LAST STEP" in t for t in out["transcript"])
