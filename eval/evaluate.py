@@ -28,9 +28,10 @@ def _tiebreak_key(transfer_ids: list[int]) -> list[int]:
             for t in transfer_ids]
 
 
-def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None) -> pl.DataFrame:
+def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None,
+               secondary_desc: bool = True) -> pl.DataFrame:
     """Rank transfers 1..N within each day: score desc, then the secondary
-    key desc (breaks the ties that saturate at 1.0), then a keyed hash of
+    key (breaks the ties that saturate at 1.0), then a keyed hash of
     the transfer id, then transfer id asc for a total order.
     Fully deterministic: no input-order dependence anywhere in the key,
     and no label signal in the tie-break.
@@ -42,10 +43,28 @@ def rank_per_day(scored: pl.DataFrame, secondary_col: str | None = None) -> pl.D
                   [False, True, False, False])
     if secondary_col is not None:
         keys, desc = (["day", "score", secondary_col, "_hkey", "transfer_id"],
-                      [False, True, True, False, False])
+                      [False, True, secondary_desc, False, False])
     return (keyed.sort(keys, descending=desc)
             .with_columns((pl.int_range(pl.len()).over("day") + 1).alias("rank"))
             .drop("_hkey"))
+
+
+def resolve_crisp_alpha(value: str, emit: float) -> float:
+    """Crisp α-cut for an exact arm: `emit` (the motif's own operating
+    point, the default — no new fitting), `support`/`0` (the old
+    support boundary), or an explicit float in [0, 1]."""
+    v = value.strip().lower()
+    if v == "emit":
+        return float(emit)
+    if v in ("support", "0", "0.0"):
+        return 0.0
+    try:
+        alpha = float(v)
+    except ValueError:
+        raise ValueError(f"crisp alpha {value!r}: use `emit`, `support` or a float in [0, 1]")
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"crisp alpha {alpha}: outside [0, 1]")
+    return alpha
 
 
 def transfer_recall(ranked: pl.DataFrame, budgets: list[int]) -> pl.DataFrame:
