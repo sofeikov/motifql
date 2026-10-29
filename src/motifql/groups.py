@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -71,6 +72,11 @@ BUTTERFLY_MAX_PARTNERS = 50
 MAX_TIED_READINGS = 64
 
 _TIE_SEED = "motifql-member-tie-v1"
+
+# Compiled fast path (motifql.groups_fast) reproduces the executors below
+# bit for bit; these pure-Python executors stay as the reference and the
+# fallback. MOTIFQL_PURE_PYTHON=1 (or setting PURE_PYTHON) forces them.
+PURE_PYTHON = os.environ.get("MOTIFQL_PURE_PYTHON", "") not in ("", "0")
 
 
 def _hkey(edge_pos: int) -> int:
@@ -898,6 +904,10 @@ def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
 def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False,
                 crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a GroupPlan by kind."""
+    if not PURE_PYTHON:
+        res = _fast().score_group(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
+        if res is not None:
+            return res
     if plan.kind == "fan":
         return _score_fan(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
     if plan.kind == "scatter":
@@ -910,4 +920,26 @@ def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False,
 def score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False,
                     crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a ButterflyPlan."""
+    if not PURE_PYTHON:
+        res = _fast().score_butterfly(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
+        if res is not None:
+            return res
     return _score_butterfly(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
+
+
+def score_group_batch(graph, positions, plan, libs, crisp: bool = False,
+                      crisp_alpha: float = 0.0):
+    """(top_score, found, expansions, truncated) arrays over `positions`."""
+    return _fast().score_group_batch(graph, positions, plan, libs, crisp, crisp_alpha)
+
+
+_FAST_MODULE = None
+
+
+def _fast():
+    # Imported lazily: groups_fast imports this module.
+    global _FAST_MODULE
+    if _FAST_MODULE is None:
+        from motifql import groups_fast
+        _FAST_MODULE = groups_fast
+    return _FAST_MODULE
