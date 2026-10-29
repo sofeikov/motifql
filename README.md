@@ -81,8 +81,7 @@ day**: the analyst budget a real team works to. The comparison is a
 LightGBM model trained on trailing-window aggregates plus each transfer's
 own amount, payment format and self-loop flag: a strong transaction-level
 baseline. (These numbers come from the issue #15 re-evaluation in
-[PR #16](https://github.com/sofeikov/motifql/pull/16); they are
-reproducible from `main` once it merges.)
+[PR #16](https://github.com/sofeikov/motifql/pull/16).)
 
 Laundering transfers caught, by pattern:
 
