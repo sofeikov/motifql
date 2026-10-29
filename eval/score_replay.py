@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
+from motifql.groups import score_batch  # noqa: E402
 from motifql.matcher import ScoredResult, score  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import PathPlan, compile_motif  # noqa: E402
@@ -55,17 +56,8 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
     """Score one anchor shard; returns positions first for realignment."""
     positions, prune = args
     assert _GRAPH is not None and _PLAN is not None and _LIBS is not None
-    n = len(positions)
-    top = np.empty(n, dtype=np.float64)
-    found = np.empty(n, dtype=bool)
-    exps = np.empty(n, dtype=np.float64)
-    trunc = np.empty(n, dtype=bool)
-    for i, pos in enumerate(positions.tolist()):
-        res = score(_GRAPH, int(pos), _PLAN, _LIBS, prune=prune)
-        top[i] = res.top_score
-        found[i] = res.found
-        exps[i] = res.expansions
-        trunc[i] = res.truncated
+    # Equal to a score() loop over the shard; serial, so fork-safe.
+    top, found, exps, trunc = score_batch(_GRAPH, positions, _PLAN, _LIBS, prune=prune)
     return positions, top, found, exps, trunc
 
 

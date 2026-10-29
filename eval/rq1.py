@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import evaluate, splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.groups import score_any  # noqa: E402
+from motifql.groups import score_batch  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import compile_motif  # noqa: E402
 
@@ -65,23 +65,15 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
     """Score one anchor shard; positions first so results realign."""
     positions, _ = args
     assert _GRAPH is not None and _PLAN is not None and _LIBS is not None
-    n = len(positions)
-    top = np.empty(n, dtype=np.float64)
-    found = np.empty(n, dtype=bool)
-    exps = np.empty(n, dtype=np.float64)
-    trunc = np.empty(n, dtype=bool)
-    for i, pos in enumerate(positions.tolist()):
-        # Unpruned: RQ1 ranks by the best witness even below emit, and
-        # pruning zeroes every sub-emit top_score. (RQ2 sets the
-        # globals for its arms, including floor=EXACT_FLOOR for the
-        # fuzzy arm; RQ1 defaults are unchanged.)
-        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS,
-                        prune=_PRUNE, crisp=_CRISP, crisp_alpha=_CALPHA,
-                        floor=_FLOOR)
-        top[i] = res.top_score
-        found[i] = res.found
-        exps[i] = res.expansions
-        trunc[i] = res.truncated
+    # Unpruned: RQ1 ranks by the best witness even below emit, and
+    # pruning zeroes every sub-emit top_score. (RQ2 sets the globals for
+    # its arms, including floor=EXACT_FLOOR for the fuzzy arm; RQ1
+    # defaults are unchanged.) score_batch equals a score_any loop over
+    # the shard and runs serially in this process (no numba threads, so
+    # the fork Pool stays safe).
+    top, found, exps, trunc = score_batch(
+        _GRAPH, positions, _PLAN, _LIBS, prune=_PRUNE, crisp=_CRISP,
+        crisp_alpha=_CALPHA, floor=_FLOOR)
     return positions, top, found, exps, trunc
 
 
