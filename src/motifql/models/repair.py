@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CANDIDATE_NAME = "cand"
 MAX_FEEDBACK_CHARS = 2000
 
+# NOTE: keep _SPEC byte-stable; every edit invalidates the cached model
+# calls. Known nit: `index` is listed as an edge field but the planner
+# rejects it — fix in a prompt v2 with a planned cache refresh.
 _SPEC = """\
 You write MotifQL motifs: fuzzy, time-ordered money-flow patterns.
 
@@ -137,7 +140,7 @@ def try_compile(text: str) -> tuple[CompiledCandidate | None, list[str]]:
 class RepairResult:
     """Outcome of one repair loop."""
 
-    text: str  # last motif text (best effort)
+    text: str  # last compiling motif text (best effort)
     compiled: CompiledCandidate | None
     attempts: int  # model calls used
     errors: list[str] = field(default_factory=list)  # final round's errors
@@ -158,11 +161,14 @@ def repair_loop(english: str, complete, *, max_attempts: int = 3,
                 {"role": "user", "content": user_prompt(english)}]
     usage: list[dict] = []
     last_text, last_errors = "", []
+    last_good: CompiledCandidate | None = None
     for _ in range(max(1, max_attempts)):
         text, use = complete(messages)
         usage.append(use)
         last_text = text
         compiled, errors = try_compile(text)
+        if compiled is not None:
+            last_good = compiled
         if compiled is not None and sanity is not None:
             try:
                 errors = list(sanity(compiled))
@@ -174,5 +180,9 @@ def repair_loop(english: str, complete, *, max_attempts: int = 3,
         messages = [{"role": "system", "content": system},
                     {"role": "user",
                      "content": repair_prompt(english, text, errors or ["unknown failure"])}]
-    compiled, _ = try_compile(last_text)
-    return RepairResult(last_text, compiled, len(usage), last_errors, usage)
+    # Attempts out: fall back to the last compiling candidate, so one bad
+    # final round (or cut-off reply) cannot un-compile earlier rounds.
+    # The metric is "compiles within N attempts".
+    if last_good is not None:
+        return RepairResult(last_good.text, last_good, len(usage), last_errors, usage)
+    return RepairResult(last_text, None, len(usage), last_errors, usage)

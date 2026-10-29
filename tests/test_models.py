@@ -162,6 +162,104 @@ def test_spark_client_retries_flaky_content_filter(tmp_path, monkeypatch) -> Non
     assert text == "ok" and len(calls) == 2
 
 
+def test_spark_cache_key_includes_messages(tmp_path, monkeypatch) -> None:
+    # A cache key that ignored the messages would serve the first reply
+    # for every prompt; distinct prompts must miss independently.
+    bodies = iter(["first", "second"])
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            import json as _json
+            return _json.dumps(
+                {"choices": [{"message": {"content": next(bodies)}}],
+                 "usage": {}}).encode()
+
+    monkeypatch.setenv("MUSE_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: FakeResp())
+    t1, _ = spark.complete([{"role": "user", "content": "one"}], cache_dir=tmp_path)
+    t2, _ = spark.complete([{"role": "user", "content": "two"}], cache_dir=tmp_path)
+    assert (t1, t2) == ("first", "second")
+    assert len(list(tmp_path.glob("*.json"))) == 2
+
+
+def test_repair_loop_honors_sanity_feedback() -> None:
+    # Sanity feedback must drive another round: a loop that threw it
+    # away would stop after the first compiling candidate.
+    calls = []
+
+    def fake_complete(messages):
+        calls.append(1)
+        return GOOD, {}
+
+    seen = []
+
+    def nagging_sanity(compiled):
+        seen.append(1)
+        return ["too broad"] if len(seen) == 1 else []
+
+    res = repair.repair_loop("a fan", fake_complete, max_attempts=3,
+                             sanity=nagging_sanity)
+    assert res.attempts == 2 and res.compiled is not None and res.errors == []
+
+
+def test_repair_loop_falls_back_to_last_compiling() -> None:
+    # One bad final round (or cut-off reply) must not un-compile earlier
+    # rounds: the metric is "compiles within N attempts".
+    texts = iter([GOOD, "motif cand { match (("])
+
+    def fake_complete(messages):
+        return next(texts), {}
+
+    seen = []
+
+    def nag_once(compiled):
+        seen.append(1)
+        return ["too broad"] if len(seen) == 1 else []
+
+    res = repair.repair_loop("a fan", fake_complete, max_attempts=2,
+                             sanity=nag_once)
+    assert res.compiled is not None and res.text == GOOD
+    assert res.attempts == 2 and len(res.errors) == 1
+
+
+def test_spark_client_retries_empty_cutoff_without_caching(tmp_path, monkeypatch) -> None:
+    # A reasoning-exhausted cut-off (empty content, finish length) must
+    # be retried, never cached: one poisoned an RQ4 round and replayed.
+    replies = iter([
+        {"choices": [{"message": {"content": None}, "finish_reason": "length"}],
+         "usage": {"completion_tokens": 4000}},
+        {"choices": [{"message": {"content": "recovered"}, "finish_reason": "stop"}],
+         "usage": {"completion_tokens": 10}},
+    ])
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            import json as _json
+            return _json.dumps(next(replies)).encode()
+
+    monkeypatch.setenv("MUSE_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: FakeResp())
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    text, _ = spark.complete([{"role": "user", "content": "hi"}], cache_dir=tmp_path)
+    assert text == "recovered"
+    stored = list(tmp_path.glob("*.json"))
+    assert len(stored) == 1
+    import json as _json
+    assert _json.loads(stored[0].read_text())["text"] == "recovered"
+
+
 def test_spark_client_requires_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("MUSE_KEY", raising=False)
     try:

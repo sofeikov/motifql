@@ -9,6 +9,7 @@ and harness retries never repay. stdlib only (urllib).
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -63,10 +64,15 @@ def complete(messages: list[dict], *, model: str = DEFAULT_MODEL,
     req = _canonical(model, messages, max_tokens, reasoning_effort)
     path = cache_path(req, cache_dir)
     if path.exists():
-        record = json.loads(path.read_text())
-        usage = dict(record.get("usage", {}))
-        usage["cached"] = True
-        return record["text"], usage
+        try:
+            record = json.loads(path.read_text())
+            usage = dict(record.get("usage", {}))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            record, usage = {}, {}
+        if isinstance(record.get("text"), str) and record["text"].strip():
+            usage["cached"] = True
+            return record["text"], usage
+        path.unlink(missing_ok=True)  # corrupt or empty entry: refetch
     body = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if reasoning_effort is not None:
         body["reasoning_effort"] = reasoning_effort
@@ -80,13 +86,32 @@ def complete(messages: list[dict], *, model: str = DEFAULT_MODEL,
                 f"{BASE_URL}/chat/completions", data=data, headers=headers,
                 method="POST")
             with urllib.request.urlopen(http_req, timeout=timeout_s) as resp:
-                payload = json.loads(resp.read().decode())
-            text = payload["choices"][0]["message"]["content"] or ""
-            usage = dict(payload.get("usage", {}))
+                raw = resp.read()
+            try:
+                payload = json.loads(raw.decode())
+                choice = payload["choices"][0]
+                text = choice["message"]["content"] or ""
+                finish = choice.get("finish_reason")
+                usage = dict(payload.get("usage") or {})
+            except (json.JSONDecodeError, UnicodeDecodeError, KeyError,
+                    IndexError, TypeError, AttributeError) as exc:
+                last = SparkError(f"malformed model response: {exc}")
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            if not text.strip() or finish == "length":
+                # Reasoning-exhausted cut-off: never cache an empty reply
+                # (one poisoned RQ4 round 3 and replayed on every rerun).
+                last = SparkError(
+                    f"empty reply (finish={finish}, "
+                    f"tokens={usage.get('completion_tokens')}); retrying")
+                time.sleep(2.0 * (attempt + 1))
+                continue
             usage["cached"] = False
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"request": json.loads(req), "text": text,
-                                        "usage": usage}))
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"request": json.loads(req), "text": text,
+                                       "usage": usage}))
+            os.replace(tmp, path)
             return text, usage
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:500]
@@ -99,7 +124,8 @@ def complete(messages: list[dict], *, model: str = DEFAULT_MODEL,
                 time.sleep(2.0 * (attempt + 1))
                 continue
             raise last from exc
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                http.client.IncompleteRead, http.client.RemoteDisconnected) as exc:
             last = SparkError(f"transport error: {exc}")
             time.sleep(2.0 * (attempt + 1))
     raise last  # type: ignore[misc]

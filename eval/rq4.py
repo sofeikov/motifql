@@ -9,8 +9,9 @@ instance's last-member anchor plus uniform background fill).
 Primary metric: share compiling within N attempts. Secondary: Jaccard
 over fired witness edge-sets (None when the reference fires nothing on
 the sample — uninformative, flagged for review). Reference witness sets
-are cached by (item, reference hash, sample); model calls are cached by
-prompt hash, so reruns are free. Resume by default; --fresh restarts.
+are cached by (sample, reference text); model calls are cached by
+prompt hash, so reruns are free. Resume matches (item, arm, attempts,
+sample, seed, reference) by default; --fresh redoes the requested arms.
 
 Usage:
     uv run eval/rq4.py --check            # compile all references, no model/data
@@ -73,18 +74,30 @@ def _jaccard(ref: set, cand: set) -> float | None:
     return len(ref & cand) / len(ref | cand)
 
 
-def _load_or_build_refs(graph, sample: np.ndarray, seed: int) -> dict[str, set]:
-    """Reference witness sets, cached by reference-text hash."""
+def _load_or_build_refs(graph, sample: np.ndarray, seed: int,
+                      sample_n: int, data: Path) -> dict[str, set]:
+    """Reference witness sets, cached by (sample, reference text).
+
+    The key carries a hash of the evaluated sample plus the run's seed,
+    sample size and data dir: reruns that change any of them rebuild
+    instead of comparing candidates against stale oracle sets.
+    """
+    sample_hash = hashlib.sha256(np.ascontiguousarray(sample).tobytes()).hexdigest()[:16]
     want = {it["id"]: hashlib.sha256(it["reference"].encode()).hexdigest()[:16]
             for it in ITEMS}
     cached: dict[str, set] = {}
     if REF_CACHE.exists():
         frame = pl.read_parquet(REF_CACHE)
-        frame = frame.filter(pl.col("seed") == seed)
-        for row in frame.iter_rows(named=True):
-            if want.get(row["item_id"]) == row["ref_hash"]:
-                cached[row["item_id"]] = {
-                    frozenset(map(int, w)) for w in row["witnesses"]}
+        if {"sample_hash", "sample_n", "data"} <= set(frame.columns):
+            frame = frame.filter(
+                (pl.col("sample_hash") == sample_hash)
+                & (pl.col("seed") == seed)
+                & (pl.col("sample_n") == sample_n)
+                & (pl.col("data") == str(data)))
+            for row in frame.iter_rows(named=True):
+                if want.get(row["item_id"]) == row["ref_hash"]:
+                    cached[row["item_id"]] = {
+                        frozenset(map(int, w)) for w in row["witnesses"]}
     missing = [it for it in ITEMS if it["id"] not in cached]
     if missing:
         log.info("scoring %d references over %d sampled anchors", len(missing), len(sample))
@@ -95,18 +108,23 @@ def _load_or_build_refs(graph, sample: np.ndarray, seed: int) -> dict[str, set]:
         libs = libs_from_doc(doc)
         wit = _witnesses(graph, sample, plan, libs)
         cached[it["id"]] = wit
-        rows.append({"item_id": it["id"], "ref_hash": want[it["id"]], "seed": seed,
+        rows.append({"item_id": it["id"], "ref_hash": want[it["id"]],
+                     "seed": seed, "sample_n": sample_n, "data": str(data),
+                     "sample_hash": sample_hash,
                      "witnesses": [sorted(w) for w in wit]})
         log.info("  ref %-24s fires %d witness sets", it["id"], len(wit))
     if rows:
         REF_CACHE.parent.mkdir(parents=True, exist_ok=True)
         new = pl.DataFrame(rows, schema={"item_id": pl.String, "ref_hash": pl.String,
-                                         "seed": pl.Int64,
+                                         "seed": pl.Int64, "sample_n": pl.Int64,
+                                         "data": pl.String, "sample_hash": pl.String,
                                          "witnesses": pl.List(pl.List(pl.Int64))})
         if REF_CACHE.exists():
-            old = pl.read_parquet(REF_CACHE).filter(
-                pl.col("seed") != seed)
-            new = pl.concat([old, new], how="vertical")
+            old = pl.read_parquet(REF_CACHE)
+            new = pl.concat([old, new], how="diagonal").unique(
+                subset=["sample_hash", "seed", "item_id"], keep="last",
+                maintain_order=True).filter(
+                    pl.col("sample_hash").is_not_null())
         new.write_parquet(REF_CACHE)
     return cached
 
@@ -147,7 +165,7 @@ def _complete(messages):
 
 
 def _run_item(item: dict, arm: str, max_attempts: int, graph,
-              sample: np.ndarray, ref_wit: set) -> dict:
+              sample: np.ndarray, ref_wit: set, prov: dict) -> dict:
     sanity_sample = sample[:min(SANITY_N, len(sample))]
 
     def sanity(compiled) -> list[str]:
@@ -186,7 +204,9 @@ def _run_item(item: dict, arm: str, max_attempts: int, graph,
             "attempts": res.attempts, "jaccard": _jaccard(ref_wit, cand_wit),
             "ref_fires": len(ref_wit), "cand_fires": len(cand_wit),
             "prompt_tokens": tok_in, "completion_tokens": tok_out,
-            "errors": " | ".join(res.errors)[:500]}
+            "errors": " | ".join(res.errors)[:500],
+            "max_attempts": prov["max_attempts"], "sample_n": prov["sample_n"],
+            "seed": prov["seed"], "ref_hash": prov["ref_hash"]}
 
 
 @app.command()
@@ -198,7 +218,7 @@ def main(
     max_attempts: Annotated[int, typer.Option(help="Repair attempts per item.")] = 3,
     arms: Annotated[str, typer.Option(help="Comma-separated: repair,repair_nosanity,oneshot.")] = "repair,oneshot",
     check: Annotated[bool, typer.Option(help="Compile references only; no model/data.")] = False,
-    fresh: Annotated[bool, typer.Option(help="Ignore previous runs/resume state.")] = False,
+    fresh: Annotated[bool, typer.Option(help="Redo these arms (drops their rows; other arms survive).")] = False,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if check:
@@ -210,11 +230,30 @@ def main(
         return
     arm_list = [a.strip() for a in arms.split(",") if a.strip()]
     items = ITEMS[:limit] if limit > 0 else ITEMS
-    done: set[tuple[str, str]] = set()
-    if RUNS_CSV.exists() and not fresh:
-        for row in pl.read_csv(RUNS_CSV).iter_rows(named=True):
-            done.add((row["item_id"], row["arm"]))
-    todo = [(it, a) for it in items for a in arm_list if (it["id"], a) not in done]
+    ref_hashes = {it["id"]: hashlib.sha256(it["reference"].encode()).hexdigest()[:16]
+                  for it in ITEMS}
+    if RUNS_CSV.exists() and fresh:
+        # Redo these arms only; other arms' rows survive.
+        remaining = pl.read_csv(RUNS_CSV).filter(~pl.col("arm").is_in(arm_list))
+        if len(remaining):
+            remaining.write_csv(RUNS_CSV)
+        else:
+            RUNS_CSV.unlink()
+    done: set[tuple] = set()
+    if RUNS_CSV.exists():
+        frame = pl.read_csv(RUNS_CSV)
+        if {"max_attempts", "sample_n", "seed", "ref_hash"} <= set(frame.columns):
+            for row in frame.iter_rows(named=True):
+                done.add((row["item_id"], row["arm"], row["max_attempts"],
+                          row["sample_n"], row["seed"], row["ref_hash"]))
+        else:
+            log.warning("runs CSV predates provenance columns; rerunning everything")
+    def _key(it, a):
+        att = 1 if a == "oneshot" else max_attempts
+        return (it["id"], a, att, sample_n, seed, ref_hashes[it["id"]])
+
+    todo = [(it, a) for it in items for a in arm_list
+            if _key(it, a) not in done]
     log.info("%d items x %s: %d runs (%d cached)", len(items), arm_list,
              len(todo), len(items) * len(arm_list) - len(todo))
     if not todo:
@@ -229,22 +268,23 @@ def main(
         (days >= np.datetime64(str(tr0))) & (days <= np.datetime64(str(tr1))))
     log.info("graph edges: %d, train anchors: %d", graph.n_edges, len(anchor_pos))
     sample = _sample_anchors(data, graph, scoped, anchor_pos, sample_n, seed)
-    ref_wits = _load_or_build_refs(graph, sample, seed)
+    ref_wits = _load_or_build_refs(graph, sample, seed, sample_n, data)
     RUNS_CSV.parent.mkdir(parents=True, exist_ok=True)
-    header_written = RUNS_CSV.exists() and not fresh
-    if fresh and RUNS_CSV.exists():
-        RUNS_CSV.unlink()
-        header_written = False
+    header_written = RUNS_CSV.exists()
     for i, (it, arm) in enumerate(todo):
         log.info("[%d/%d] %s (%s)", i + 1, len(todo), it["id"], arm)
+        prov = {"max_attempts": _key(it, arm)[2],
+                "sample_n": sample_n, "seed": seed,
+                "ref_hash": ref_hashes[it["id"]]}
         try:
-            row = _run_item(it, arm, max_attempts, graph, sample, ref_wits[it["id"]])
+            row = _run_item(it, arm, max_attempts, graph, sample,
+                            ref_wits[it["id"]], prov)
         except Exception as exc:  # harness never dies on one item
             log.warning("  item failed: %r", exc)
             row = {"item_id": it["id"], "arm": arm, "compiled": False,
                    "attempts": 0, "jaccard": None, "ref_fires": len(ref_wits[it["id"]]),
                    "cand_fires": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                   "errors": f"harness: {exc}"[:500]}
+                   "errors": f"harness: {exc}"[:500], **prov}
         frame = pl.DataFrame([row])
         with open(RUNS_CSV, "a" if header_written else "w") as handle:
             frame.write_csv(handle, include_header=not header_written)

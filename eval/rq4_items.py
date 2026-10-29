@@ -564,7 +564,7 @@ ITEMS: list[dict[str, str]] = [
                  "accounts within 4 days, and most payments are big (0 below "
                  "1000 USD, rising to 1 at 5000). Fire at 0.5."),
      "reference": (
-         "term big = trapezoid(1000 USD, 5000 USD, 1000000 USD, 1000001 USD)\n"
+         "term big = ramp(1000 USD, 5000 USD)\n"
          "motif ref { match (s:account) -[e:transfer]-> (r:account)\n"
          " group by s over r window 4d\n"
          " having count(distinct r) >= 2\n"

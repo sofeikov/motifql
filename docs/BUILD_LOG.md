@@ -198,3 +198,22 @@ overnight:
   HURTS (repair Jaccard 0.641 vs 0.954 — rare-but-correct motifs get
   "loosen"ed into wrong ones); provider content filter flaky on 3
   benign items. 12 tests (112/112 pass).
+
+## Nov 3 (cont.) — RQ4 review corrections (PR #13)
+
+Claude review of the RQ4 writeup, all verified and addressed:
+
+- Finding 2 rewritten: degradations are 11 tighten / 5 loosen (not
+  mostly loosen); sanity flags 32/50 correct references, so fixed
+  thresholds are dropped as a follow-up direction (asymmetric fix
+  would keep the tighten damage). Sanity slice documented (Sep 3-4
+  head, subset of eval).
+- Numbers relabeled: Jaccard over all rows (oneshot 0.888, repair
+  0.629, nosanity 0.957); scatter-gap was a cached cut-off, not a
+  give-up (repair 47/47); fanout-most-big $1M cap fixed in the
+  reference (now 1.00 everywhere).
+- Code: empty/cut-off replies retried, never cached (atomic writes,
+  corrupt-entry and malformed-200 tolerance); repair falls back to
+  the last compiling candidate; ref cache keyed by sample (+rewrite
+  deletion bug fixed); resume keyed by run provenance; --fresh redoes
+  only requested arms. 4 more tests (116/116 pass).
