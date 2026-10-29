@@ -11,6 +11,10 @@ Layout
 * Global edge arrays, all in timestamp order: ``times`` (epoch seconds),
   ``frm`` / ``to`` (int32 node ids), ``amount`` (USD, float32),
   ``transfer_id`` (original prep row number, for witnesses and labels).
+  The arrays are over-allocated (geometric growth on append); the
+  ``times``/``frm``/``to``/``amount``/``transfer_id`` attributes are
+  read-only views of the first ``n_edges`` entries, so scalar and
+  whole-array readers both see exactly the live edges.
 * Accounts are interned to int32 ids from the ``"bank/account"`` composite
   key (banks and accounts stay strings upstream -- leading zeros matter --
   and the composite keeps per-bank account blocks distinct). ``nodes[id]``
@@ -37,12 +41,25 @@ the endpoints and the CSR are the structure (``out_times`` / ``in_times``
 already duplicate ``times``), so changing them means rebuilding the CSR,
 i.e. rebinding its arrays, which also re-runs the ordering check.
 
+Streaming
+---------
+``append`` adds one transfer as edge position ``n_edges`` (O(1)
+amortized): attributes go into the spare capacity, and the edge joins
+per-node overflow lists that ``incoming``/``outgoing`` merge with the
+frozen CSR segments. The CSR is rebuilt (amortized over
+``rebuild_threshold`` appends) once the overflow grows past the
+threshold, or on an explicit ``rebuild()`` call. Node ids are stable
+across rebuilds. Appends are expected in non-decreasing timestamp order
+(live streams satisfy this); out-of-order appends still merge correctly
+but cost an insertion sort step per edge.
+
 Retention
 ---------
 Queries are always window-bounded, so retention is a watermark plus lazy
 per-node floor offsets: ``evict_before(t)`` only moves the watermark
 (O(1)); each query rebases the touched node's floor with one binary
-search (O(log degree)). Memory of evicted edges is not freed until a
+search (O(log degree)). Overflow edges are filtered against the
+watermark on read. Memory of evicted edges is not freed until a
 rebuild -- documented, not silent.
 
 Time semantics
@@ -61,6 +78,7 @@ Usage:
 
 from __future__ import annotations
 
+import bisect
 import logging
 from pathlib import Path
 
@@ -94,12 +112,15 @@ class TemporalGraph:
         in_edges: npt.NDArray[np.uint32],
         in_times: npt.NDArray[np.int64],
         retention_s: int,
+        rebuild_threshold: int = 100_000,
     ) -> None:
-        self.times = times
-        self.frm = frm
-        self.to = to
-        self.amount = amount
-        self.transfer_id = transfer_id
+        n = len(times)
+        self._times = _with_spare(np.asarray(times))
+        self._frm = _with_spare(np.asarray(frm))
+        self._to = _with_spare(np.asarray(to))
+        self._amount = _with_spare(np.asarray(amount))
+        self._transfer_id = _with_spare(np.asarray(transfer_id))
+        self._n_edges = n
         self.nodes = nodes
         self.node_index = {key: i for i, key in enumerate(nodes)}
         self.out_ptr = out_ptr
@@ -111,11 +132,46 @@ class TemporalGraph:
         # Checked now, in the building process, so forked workers inherit it.
         self._csr_ok = _csr_ordered(self)
         self.retention_s = retention_s
+        self.rebuild_threshold = rebuild_threshold
         self.watermark = int(times[0]) if len(times) else 0
         # Lazy per-node eviction floors, rebased on first access past watermark.
+        # Sized to the CSR-covered nodes only; appended nodes live in the
+        # overflow until a rebuild extends the CSR over them.
         self._out_lo = np.zeros(len(nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
         self._floors_clean = True
+        # Nodes covered by the CSR segments (== len(nodes) at build/rebuild;
+        # appends intern nodes past this until the next rebuild).
+        self._csr_nodes = len(nodes)
+        # Post-CSR edges per node: lists of (time, position), sorted.
+        self._ov_in: dict[int, list[tuple[int, int]]] = {}
+        self._ov_out: dict[int, list[tuple[int, int]]] = {}
+        self._appended = 0
+
+    # -- live edge views -------------------------------------------------
+    # The attribute arrays are over-allocated for appends; readers see
+    # exactly the live prefix. Scalar indexing costs one slice (a view,
+    # no copy); whole-array readers (argsort, tolist) see no spare slots.
+
+    @property
+    def times(self) -> npt.NDArray[np.int64]:
+        return self._times[:self._n_edges]
+
+    @property
+    def frm(self) -> npt.NDArray[np.int32]:
+        return self._frm[:self._n_edges]
+
+    @property
+    def to(self) -> npt.NDArray[np.int32]:
+        return self._to[:self._n_edges]
+
+    @property
+    def amount(self) -> npt.NDArray[np.float32]:
+        return self._amount[:self._n_edges]
+
+    @property
+    def transfer_id(self) -> npt.NDArray:
+        return self._transfer_id[:self._n_edges]
 
     def __setattr__(self, name: str, value) -> None:
         object.__setattr__(self, name, value)
@@ -213,9 +269,94 @@ class TemporalGraph:
     def n_nodes(self) -> int:
         return len(self.nodes)
 
+    @classmethod
+    def empty(cls, retention_days: int = DEFAULT_RETENTION_DAYS,
+              rebuild_threshold: int = 100_000) -> TemporalGraph:
+        """An edge-free graph that only grows through ``append`` (live use)."""
+        z64 = np.empty(0, dtype=np.int64)
+        return cls(
+            times=z64, frm=np.empty(0, dtype=np.int32),
+            to=np.empty(0, dtype=np.int32),
+            amount=np.empty(0, dtype=np.float32),
+            transfer_id=np.empty(0, dtype=np.int64), nodes=[],
+            out_ptr=np.zeros(1, dtype=np.int64),
+            out_edges=np.empty(0, dtype=np.uint32),
+            out_times=np.empty(0, dtype=np.int64),
+            in_ptr=np.zeros(1, dtype=np.int64),
+            in_edges=np.empty(0, dtype=np.uint32),
+            in_times=np.empty(0, dtype=np.int64),
+            retention_s=retention_days * SECS_PER_DAY,
+            rebuild_threshold=rebuild_threshold,
+        )
+
+    def append(self, timestamp: int, from_bank: str, from_account: str,
+               to_bank: str, to_account: str, amount_usd: float,
+               transfer_id: int) -> int:
+        """Add one transfer as edge position ``n_edges``; return the position.
+
+        O(1) amortized: attributes go into spare capacity, adjacency into
+        the per-node overflow. Rebuilds the CSR once ``rebuild_threshold``
+        appends accumulate since the last rebuild.
+        """
+        if self._n_edges >= 2**32:
+            raise ValueError("edge count exceeds uint32 adjacency")
+        if self._n_edges == len(self._times):
+            self._grow()
+        f = self._intern(f"{from_bank}/{from_account}")
+        t = self._intern(f"{to_bank}/{to_account}")
+        p = self._n_edges
+        self._times[p] = int(timestamp)
+        self._frm[p] = f
+        self._to[p] = t
+        self._amount[p] = amount_usd
+        self._transfer_id[p] = transfer_id
+        self._n_edges += 1
+        _ov_insert(self._ov_out, f, int(timestamp), p)
+        _ov_insert(self._ov_in, t, int(timestamp), p)
+        self._appended += 1
+        if self._appended >= self.rebuild_threshold:
+            self.rebuild()
+        return p
+
+    def _intern(self, key: str) -> int:
+        i = self.node_index.get(key)
+        if i is None:
+            i = len(self.nodes)
+            self.nodes.append(key)
+            self.node_index[key] = i
+        return i
+
+    def _grow(self) -> None:
+        cap = max(len(self._times) * 3 // 2, len(self._times) + 1024)
+        for attr in ("_times", "_frm", "_to", "_amount", "_transfer_id"):
+            a = getattr(self, attr)
+            grown = np.empty(cap, dtype=a.dtype)
+            grown[:len(a)] = a
+            setattr(self, attr, grown)
+
+    def rebuild(self) -> None:
+        """Rebuild the CSR over every live edge; clear the overflow.
+
+        Node ids are stable (the nodes list keeps its order, so appended
+        nodes keep their ids and only gain CSR segments).
+        """
+        n = self._n_edges
+        times = self._times[:n]
+        self.out_ptr, self.out_edges, self.out_times = _csr(
+            self._frm[:n], times, len(self.nodes))
+        self.in_ptr, self.in_edges, self.in_times = _csr(
+            self._to[:n], times, len(self.nodes))
+        self._out_lo = np.zeros(len(self.nodes), dtype=np.int64)
+        self._in_lo = np.zeros(len(self.nodes), dtype=np.int64)
+        self._floors_clean = True
+        self._csr_nodes = len(self.nodes)
+        self._ov_in = {}
+        self._ov_out = {}
+        self._appended = 0
+
     @property
     def n_edges(self) -> int:
-        return len(self.times)
+        return self._n_edges
 
     # -- windowed adjacency ----------------------------------------------
 
@@ -224,16 +365,27 @@ class TemporalGraph:
     ) -> tuple[npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
         """Edge positions and times into ``node`` over ``[before_t-window_s, before_t)``.
 
-        Returns views, oldest first. Unknown nodes yield empty slices.
+        Returns views, oldest first (a fresh merged array while the node
+        holds post-CSR overflow). Unknown nodes yield empty slices.
         """
         if node < 0:
             return _EMPTY_U32, _EMPTY_I64
-        lo = self._rebase(self.in_ptr, self.in_times, self._in_lo, node)
-        hi = self.in_ptr[node + 1]
-        seg = self.in_times[lo:hi]
-        i = lo + int(np.searchsorted(seg, before_t - window_s, side="left"))
-        j = lo + int(np.searchsorted(seg, before_t, side="left"))
-        return self.in_edges[i:j], self.in_times[i:j]
+        edges, times = _EMPTY_U32, _EMPTY_I64
+        if node < self._csr_nodes:
+            lo = self._rebase(self.in_ptr, self.in_times, self._in_lo, node)
+            hi = self.in_ptr[node + 1]
+            seg = self.in_times[lo:hi]
+            i = lo + int(np.searchsorted(seg, before_t - window_s, side="left"))
+            j = lo + int(np.searchsorted(seg, before_t, side="left"))
+            edges, times = self.in_edges[i:j], self.in_times[i:j]
+        ov = self._ov_in.get(node)
+        if ov:
+            o_pos, o_t = _ov_slice(ov, before_t - window_s, before_t, self.watermark)
+            if len(o_pos):
+                if not len(edges):
+                    return o_pos, o_t
+                return _merge_runs(edges, times, o_pos, o_t)
+        return edges, times
 
     def outgoing(
         self, node: int, before_t: int, window_s: int
@@ -241,12 +393,22 @@ class TemporalGraph:
         """Edge positions and times out of ``node`` over ``[before_t-window_s, before_t)``."""
         if node < 0:
             return _EMPTY_U32, _EMPTY_I64
-        lo = self._rebase(self.out_ptr, self.out_times, self._out_lo, node)
-        hi = self.out_ptr[node + 1]
-        seg = self.out_times[lo:hi]
-        i = lo + int(np.searchsorted(seg, before_t - window_s, side="left"))
-        j = lo + int(np.searchsorted(seg, before_t, side="left"))
-        return self.out_edges[i:j], self.out_times[i:j]
+        edges, times = _EMPTY_U32, _EMPTY_I64
+        if node < self._csr_nodes:
+            lo = self._rebase(self.out_ptr, self.out_times, self._out_lo, node)
+            hi = self.out_ptr[node + 1]
+            seg = self.out_times[lo:hi]
+            i = lo + int(np.searchsorted(seg, before_t - window_s, side="left"))
+            j = lo + int(np.searchsorted(seg, before_t, side="left"))
+            edges, times = self.out_edges[i:j], self.out_times[i:j]
+        ov = self._ov_out.get(node)
+        if ov:
+            o_pos, o_t = _ov_slice(ov, before_t - window_s, before_t, self.watermark)
+            if len(o_pos):
+                if not len(edges):
+                    return o_pos, o_t
+                return _merge_runs(edges, times, o_pos, o_t)
+        return edges, times
 
     # -- retention --------------------------------------------------------
 
@@ -280,7 +442,7 @@ class TemporalGraph:
         """
         if self._floors_clean:
             return
-        for node in range(self.n_nodes):
+        for node in range(self._csr_nodes):
             self._rebase(self.in_ptr, self.in_times, self._in_lo, node)
             self._rebase(self.out_ptr, self.out_times, self._out_lo, node)
         self._floors_clean = True
@@ -288,27 +450,52 @@ class TemporalGraph:
     # -- degrees and cost statistics --------------------------------------
 
     def in_degree(self, node: int) -> int:
-        return int(self.in_ptr[node + 1] - max(self.in_ptr[node], self._in_lo[node]))
+        base = 0
+        if 0 <= node < self._csr_nodes:
+            base = int(self.in_ptr[node + 1] - max(self.in_ptr[node], self._in_lo[node]))
+        return base + _ov_live(self._ov_in.get(node), self.watermark)
 
     def out_degree(self, node: int) -> int:
-        return int(self.out_ptr[node + 1] - max(self.out_ptr[node], self._out_lo[node]))
+        base = 0
+        if 0 <= node < self._csr_nodes:
+            base = int(self.out_ptr[node + 1] - max(self.out_ptr[node], self._out_lo[node]))
+        return base + _ov_live(self._ov_out.get(node), self.watermark)
 
     def degree_histogram(self) -> npt.NDArray[np.int64]:
         """Live in+out degree histogram (feeds the Oct 29 cost estimator)."""
         self._rebase_all()
-        in_deg = np.diff(self.in_ptr) - (self._in_lo - self.in_ptr[:-1]).clip(min=0)
-        out_deg = np.diff(self.out_ptr) - (self._out_lo - self.out_ptr[:-1]).clip(min=0)
-        return np.bincount((in_deg + out_deg).astype(np.int64))
+        n = len(self.nodes)
+        in_deg = np.zeros(n, dtype=np.int64)
+        out_deg = np.zeros(n, dtype=np.int64)
+        in_deg[:self._csr_nodes] = (
+            np.diff(self.in_ptr) - (self._in_lo - self.in_ptr[:-1]).clip(min=0))
+        out_deg[:self._csr_nodes] = (
+            np.diff(self.out_ptr) - (self._out_lo - self.out_ptr[:-1]).clip(min=0))
+        for node, lst in self._ov_in.items():
+            in_deg[node] += _ov_live(lst, self.watermark)
+        for node, lst in self._ov_out.items():
+            out_deg[node] += _ov_live(lst, self.watermark)
+        return np.bincount(in_deg + out_deg)
 
     def stats(self) -> dict:
-        in_deg = np.diff(self.in_ptr)
-        out_deg = np.diff(self.out_ptr)
+        # Raw CSR widths, as before (expired edges included; use
+        # degree_histogram for watermark-aware degrees).
+        n = len(self.nodes)
+        in_deg = np.zeros(n, dtype=np.int64)
+        out_deg = np.zeros(n, dtype=np.int64)
+        if self._csr_nodes:
+            in_deg[:self._csr_nodes] = np.diff(self.in_ptr)
+            out_deg[:self._csr_nodes] = np.diff(self.out_ptr)
+        for node, lst in self._ov_in.items():
+            in_deg[node] += len(lst)
+        for node, lst in self._ov_out.items():
+            out_deg[node] += len(lst)
         return {
             "n_nodes": self.n_nodes,
             "n_edges": self.n_edges,
             "max_in_degree": int(in_deg.max(initial=0)),
             "max_out_degree": int(out_deg.max(initial=0)),
-            "mean_degree": float((in_deg + out_deg).mean()),
+            "mean_degree": float((in_deg + out_deg).mean()) if n else 0.0,
             "watermark": self.watermark,
             "retention_s": self.retention_s,
         }
@@ -363,6 +550,58 @@ def _csr_ordered(graph: TemporalGraph) -> bool:
         if not bool(np.all(np.diff(e)[inside] > 0)):
             return False
     return True
+
+
+def _with_spare(a: npt.NDArray, min_spare: int = 1024) -> npt.NDArray:
+    """Copy ``a`` into an over-allocated array sized for appends."""
+    cap = len(a) + max(min_spare, len(a) // 32)
+    out = np.empty(cap, dtype=a.dtype)
+    out[:len(a)] = a
+    return out
+
+
+def _ov_insert(ov: dict[int, list[tuple[int, int]]], node: int,
+               t: int, pos: int) -> None:
+    """Insert ``(t, pos)`` keeping the node's overflow list sorted."""
+    lst = ov.setdefault(node, [])
+    if not lst or (t, pos) >= lst[-1]:
+        lst.append((t, pos))  # live streams append in order: O(1)
+    else:
+        bisect.insort(lst, (t, pos))
+
+
+def _ov_slice(ov: list[tuple[int, int]], lo_t: int, hi_t: int,
+              watermark: int
+              ) -> tuple[npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
+    """Overflow edges in ``[max(lo_t, watermark), hi_t)``, oldest first."""
+    lo = max(lo_t, watermark)
+    i = bisect.bisect_left(ov, (lo, -1))
+    j = bisect.bisect_left(ov, (hi_t, -1))
+    if j <= i:
+        return _EMPTY_U32, _EMPTY_I64
+    return (np.array([p for _, p in ov[i:j]], dtype=np.uint32),
+            np.array([t for t, _ in ov[i:j]], dtype=np.int64))
+
+
+def _ov_live(ov: list[tuple[int, int]] | None, watermark: int) -> int:
+    """Unexpired overflow edges (degree accounting)."""
+    if not ov:
+        return 0
+    return len(ov) - bisect.bisect_left(ov, (watermark, -1))
+
+
+def _merge_runs(edges: npt.NDArray[np.uint32], times: npt.NDArray[np.int64],
+                 o_pos: npt.NDArray[np.uint32], o_t: npt.NDArray[np.int64]
+                 ) -> tuple[npt.NDArray[np.uint32], npt.NDArray[np.int64]]:
+    """Merge a CSR window slice with an overflow slice, oldest first.
+
+    Overflow positions always exceed CSR positions, so same-timestamp ties
+    order CSR-first: every overflow edge inserts after the CSR edges at or
+    below its time.
+    """
+    at = np.searchsorted(times, o_t, side="right")
+    return (np.insert(edges, at, o_pos).astype(np.uint32),
+            np.insert(times, at, o_t).astype(np.int64))
 
 
 def _csr(

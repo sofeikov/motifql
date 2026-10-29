@@ -166,10 +166,12 @@ The review history is public:
 | Done | In progress |
 |---|---|
 | Language, grammar, compiler and static checks | Demo UI: English box → motif → animated witness |
-| Path matcher with exact best-witness search | ezrules proxy: motif scores added to events before rules run |
-| Group motifs (fan, scatter, gather, butterfly) | Streaming ingest and latency benchmarks |
-| Evaluation harness, baselines, fuzzy vs exact | LI-Small replication on the current engine |
-| Muse Spark compiler with repair loop | Discovery agent proposals |
+| Path matcher with exact best-witness search | LI-Small replication on the current engine |
+| Group motifs (fan, scatter, gather, butterfly) | Discovery agent proposals |
+| Evaluation harness, baselines, fuzzy vs exact | |
+| Muse Spark compiler with repair loop | |
+| Streaming ingest, live engine, ezrules proxy (stub-tested) | |
+| RQ3 latency benchmarks (live clears by 30×) | |
 
 ## Reproduce
 
