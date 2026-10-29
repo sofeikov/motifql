@@ -20,6 +20,21 @@ Layout
   duplicate the timestamps in adjacency order so every window lookup is a
   plain ``numpy.searchsorted`` on a contiguous view (one extra int64 per
   edge per direction; revisited only if HI-Medium forces it).
+* ``in_frm`` / ``in_amount`` duplicate sender and amount in in-adjacency
+  order the same way (int32 + float32 per edge): the compiled path walk
+  (``motifql._pathkernel``) reads a candidate's fields from one contiguous
+  segment instead of scattered rows.
+* ``csr_ordered`` records, once at construction, the invariant the
+  compiled fast paths rely on: ``times`` non-decreasing, every CSR
+  segment in strictly increasing position order (so position order is
+  (time, position) order) and ``out_times`` / ``in_times`` equal to
+  ``times`` at those positions. ``from_transfers`` always produces it;
+  when it is False the fast paths run the pure-Python reference.
+
+Every array above, and the duplicates in particular, is fixed at
+construction: the arrays are made read-only and the attributes cannot be
+rebound, so no derived copy can go stale. Build a new graph to change the
+data. Only the retention state below (watermark, lazy floors) mutates.
 
 Retention
 ---------
@@ -92,12 +107,34 @@ class TemporalGraph:
         self.in_ptr = in_ptr
         self.in_edges = in_edges
         self.in_times = in_times
+        # Derived duplicates (see module docstring): same role as in_times.
+        # Malformed CSR gets empty duplicates; csr_ordered is then False and
+        # nothing reads them.
+        idx = np.asarray(in_edges).astype(np.int64)
+        in_range = len(idx) == 0 or (int(idx.min()) >= 0 and int(idx.max()) < len(times))
+        if not in_range:
+            idx = idx[:0]
+        self.in_frm = np.ascontiguousarray(np.asarray(frm)[idx])
+        self.in_amount = np.ascontiguousarray(np.asarray(amount)[idx])
+        self.csr_ordered = in_range and _csr_ordered(self)
+        for name in _FROZEN_ARRAYS:
+            arr = getattr(self, name)
+            if isinstance(arr, np.ndarray):
+                arr.flags.writeable = False
         self.retention_s = retention_s
         self.watermark = int(times[0]) if len(times) else 0
         # Lazy per-node eviction floors, rebased on first access past watermark.
         self._out_lo = np.zeros(len(nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
         self._floors_clean = True
+
+    def __setattr__(self, name: str, value) -> None:
+        # Edge and CSR arrays (and the copies derived from them) are fixed
+        # at construction; rebinding one would leave the others stale.
+        if name in _FROZEN_ATTRS and name in self.__dict__:
+            raise AttributeError(
+                f"TemporalGraph.{name} is fixed at construction; build a new graph")
+        object.__setattr__(self, name, value)
 
     # -- construction ----------------------------------------------------
 
@@ -285,6 +322,42 @@ class TemporalGraph:
 
 _EMPTY_U32 = np.empty(0, dtype=np.uint32)
 _EMPTY_I64 = np.empty(0, dtype=np.int64)
+
+_FROZEN_ARRAYS = ("times", "frm", "to", "amount", "transfer_id", "out_ptr", "out_edges",
+                  "out_times", "in_ptr", "in_edges", "in_times", "in_frm", "in_amount")
+_FROZEN_ATTRS = frozenset(_FROZEN_ARRAYS + ("nodes", "node_index", "csr_ordered"))
+
+
+def _csr_ordered(graph: TemporalGraph) -> bool:
+    """The (time, position) CSR invariant (module docstring), vectorised.
+
+    Malformed CSR (bad pointers, out-of-range positions) also reads False:
+    the pure-Python reference then runs and fails or not exactly as before.
+    """
+    times = np.asarray(graph.times)
+    n_edges = len(times)
+    if n_edges > 1 and not bool(np.all(times[1:] >= times[:-1])):
+        return False
+    for ptr, edges, adj_t in ((graph.out_ptr, graph.out_edges, graph.out_times),
+                              (graph.in_ptr, graph.in_edges, graph.in_times)):
+        ptr = np.asarray(ptr)
+        e = np.asarray(edges).astype(np.int64)
+        if (len(ptr) != graph.n_nodes + 1 or int(ptr[0]) != 0 or int(ptr[-1]) != len(e)
+                or bool(np.any(np.diff(ptr) < 0)) or len(adj_t) != len(e)):
+            return False
+        if len(e) and (int(e.min()) < 0 or int(e.max()) >= n_edges):
+            return False
+        if not np.array_equal(np.asarray(adj_t), times[e]):
+            return False
+        if len(e) < 2:
+            continue
+        inside = np.ones(len(e) - 1, dtype=bool)
+        starts = ptr[1:-1].astype(np.int64)
+        starts = starts[(starts > 0) & (starts < len(e))]
+        inside[starts - 1] = False  # pair (k-1, k) straddles a segment start
+        if not bool(np.all(np.diff(e)[inside] > 0)):
+            return False
+    return True
 
 
 def _csr(

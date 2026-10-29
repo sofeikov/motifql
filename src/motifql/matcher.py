@@ -19,11 +19,13 @@ when ``soft`` conditions arrive with the compiler.
 
 Execution: ``match``, ``find_all`` and ``score`` run the walk in a numba
 kernel (``motifql._pathkernel``) whenever it models the plan, and fall
-back to the pure-Python walk below otherwise (deferred soft, unusual
-graphs). The two are bit-identical (tests/test_pathkernel_parity.py,
-eval/parity_check.py); ``MOTIFQL_PURE_PYTHON=1`` or ``PURE_PYTHON = True``
-forces the reference. ``score_path_batch`` scores many anchors in one
-kernel call (optionally ``parallel=True``).
+back to the pure-Python walk below otherwise (deferred soft, graphs whose
+``csr_ordered`` flag is False). The two are bit-identical
+(tests/test_pathkernel_parity.py, eval/parity_check_path.py);
+``MOTIFQL_PURE_PYTHON=1`` or ``PURE_PYTHON = True`` forces the reference. ``score_path_batch`` scores
+many anchors in one kernel call (optionally ``parallel=True``, which
+starts numba threads: never in a process that forks afterwards).
+Nothing is memoised between calls (see the fast-path section below).
 
 Usage:
     from motifql.graph import TemporalGraph
@@ -38,7 +40,6 @@ from __future__ import annotations
 
 import logging
 import os
-import weakref
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -466,11 +467,12 @@ def _combine(parts: list[float], tnorm: str) -> float:
 # -- numba fast path ---------------------------------------------------------
 #
 # A compute-only port of _walk/_score_py/_search_py (motifql._pathkernel).
-# Nothing is cached across calls except (a) a plan's constant atom
-# parameters, compiled once per (plan, term library), and (b) a one-off
-# structural check that the graph's in-segments are time-sorted (the
-# kernel's candidate order relies on it; from_transfers guarantees it).
-# Anything the kernel does not model falls back to the pure-Python code.
+# Nothing is cached across calls. A plan's atom parameters are compiled on
+# every score() / score_path_batch() call from the term definitions as
+# they are then (about 5 us per call on the amlworld path plans). The
+# graph-side inputs (in-adjacency copies of sender and amount, the CSR
+# ordering flag) are TemporalGraph fields fixed at construction. Anything
+# the kernel does not model falls back to the pure-Python code.
 
 _SHAPES = {"trapezoid": (0, 4), "triangle": (0, 3), "ramp": (2, 2), "ramp_down": (3, 2)}
 
@@ -487,10 +489,6 @@ class _CompiledPlan:
     max_hops: int
     window_s: float
     closed: bool
-
-
-# id(plan) -> (weakref(plan), libs[0] (held, compared by identity), compiled|None)
-_PLAN_CACHE: dict[int, tuple] = {}
 
 
 def _compile_path_plan(plan, terms: dict) -> _CompiledPlan | None:
@@ -552,42 +550,29 @@ def _compile_path_plan(plan, terms: dict) -> _CompiledPlan | None:
 
 
 def _compiled_plan(plan, libs, crisp: bool, crisp_alpha: float) -> _CompiledPlan | None:
-    """Compiled plan for the kernel, or None to use the pure-Python walk."""
+    """Compiled plan for the kernel, or None to use the pure-Python walk.
+
+    Compiled afresh on each call from the plan and the term definitions as
+    they are now; nothing is memoised, so an edited term library is always
+    seen.
+    """
     if crisp and not 0.0 <= crisp_alpha <= 1.0:
         return None  # crisp_degree raises (if a step is ever scored)
-    terms = libs[0]
-    hit = _PLAN_CACHE.get(id(plan))
-    if hit is not None and hit[0]() is plan and hit[1] is terms:
-        return hit[2]
-    compiled = _compile_path_plan(plan, terms)
-    try:
-        ref = weakref.ref(plan, lambda _r, k=id(plan): _PLAN_CACHE.pop(k, None))
-    except TypeError:
-        return compiled
-    _PLAN_CACHE[id(plan)] = (ref, terms, compiled)
-    return compiled
+    return _compile_path_plan(plan, libs[0])
 
 
 def _graph_ok(graph: TemporalGraph) -> bool:
-    """True when the kernel's array assumptions hold for this graph."""
-    key = (id(graph.in_times), id(graph.in_ptr), id(graph.in_edges), id(graph._in_lo))
-    cached = getattr(graph, "_pathkernel_ok", None)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    ok = (graph.in_times.dtype == np.int64 and graph.times.dtype == np.int64
-          and graph.in_ptr.dtype == np.int64 and graph._in_lo.dtype == np.int64
-          and np.issubdtype(graph.in_edges.dtype, np.integer)
-          and np.issubdtype(graph.frm.dtype, np.integer)
-          and np.issubdtype(graph.to.dtype, np.integer)
-          and bool(graph._in_lo.flags.writeable)
-          and len(graph.in_ptr) == graph.n_nodes + 1)
-    if ok and len(graph.in_times) > 1:
-        # Every in-segment time-sorted: drops are allowed only where a new
-        # segment starts. _capped's stable argsort is then the identity.
-        drops = np.flatnonzero(np.diff(graph.in_times) < 0) + 1
-        ok = bool(np.isin(drops, graph.in_ptr).all())
-    graph._pathkernel_ok = (key, ok)
-    return ok
+    """True when the kernel's array assumptions hold for this graph.
+
+    ``csr_ordered`` (time-sorted segments, so ``_capped``'s stable argsort
+    is the identity) is checked once when the graph is built; its arrays
+    are read-only afterwards. The rest are attribute reads.
+    """
+    return (graph.csr_ordered and graph.in_times.dtype == np.int64
+            and graph.times.dtype == np.int64 and graph.in_ptr.dtype == np.int64
+            and graph._in_lo.dtype == np.int64 and graph.in_edges.dtype.kind in "iu"
+            and graph.frm.dtype.kind in "iu" and graph.to.dtype.kind in "iu"
+            and graph._in_lo.flags.writeable)
 
 
 def _fast_ok(graph: TemporalGraph, anchor_pos, max_fanout: int) -> bool:
@@ -598,21 +583,10 @@ def _fast_ok(graph: TemporalGraph, anchor_pos, max_fanout: int) -> bool:
 
 
 def _kernel_args(graph: TemporalGraph) -> tuple:
-    """Graph arrays for the kernel, plus sender/amount in in-adjacency order.
-
-    ``in_frm`` / ``in_amt`` sit beside ``in_times`` (built once per graph,
-    like it a pure re-layout of edge columns, not a result cache): the walk
-    reads candidates' fields from one contiguous segment, not scattered rows.
-    """
-    key = (id(graph.in_edges), id(graph.frm), id(graph.amount))
-    cached = getattr(graph, "_pathkernel_in", None)
-    if cached is None or cached[0] != key:
-        idx = graph.in_edges.astype(np.int64)
-        cached = (key, np.ascontiguousarray(graph.frm[idx]),
-                  np.ascontiguousarray(graph.amount[idx]))
-        graph._pathkernel_in = cached
+    """Graph arrays for the kernel, including the in-adjacency duplicates
+    ``in_frm`` / ``in_amount`` (TemporalGraph fields, see graph.py)."""
     return (graph.times, graph.frm, graph.to, graph.amount, graph.in_ptr,
-            graph.in_edges, graph.in_times, cached[1], cached[2])
+            graph.in_edges, graph.in_times, graph.in_frm, graph.in_amount)
 
 
 _DUMMY_ENUM = np.empty((1, 1), dtype=np.int64)

@@ -5,7 +5,7 @@ A line-for-line port of ``matcher._walk`` with the scoring hooks of
 ``matcher._search_py`` (MODE_ENUM), over the graph's flat numpy arrays.
 It only removes interpreter overhead and caches nothing across calls. The
 pure-Python code in ``matcher`` stays the reference and the fallback;
-``tests/test_pathkernel_parity.py`` and ``eval/parity_check.py`` check the
+``tests/test_pathkernel_parity.py`` and ``eval/parity_check_path.py`` check the
 two agree bit for bit.
 
 Bit-identity rules the port follows (each mirrors a Python construct):

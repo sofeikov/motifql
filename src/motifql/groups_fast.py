@@ -11,8 +11,9 @@ moved into numba kernels:
 * Every CSR segment is already in (time, position) order: positions are
   time-sorted and ``_csr`` uses a stable argsort. The reference re-sorts
   each list with a Python key lambda; the kernels rely on the order
-  instead. :func:`csr_time_ordered` verifies the invariant once per
-  graph and the fast path falls back to the reference when it fails.
+  instead. ``TemporalGraph`` checks the invariant once at construction
+  (``csr_ordered``, read by :func:`csr_time_ordered`) and the fast path
+  falls back to the reference when it fails.
 * Group facts that the having/soft ASTs never read are not built. The
   context is lazy: edge amounts, times, span and per-member readings are
   materialised on first access, with the same Python lists (same element
@@ -34,7 +35,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import weakref
 
 import numba as nb
 import numpy as np
@@ -52,43 +52,12 @@ SCATTER_STRATEGY = 0
 
 # -- graph invariant ---------------------------------------------------------
 
-_ORDERED: "weakref.WeakKeyDictionary[object, tuple]" = weakref.WeakKeyDictionary()
-
-
-def _check_ordered(graph) -> bool:
-    times = np.asarray(graph.times)
-    if len(times) > 1 and not bool(np.all(times[1:] >= times[:-1])):
-        return False
-    for ptr, edges in ((graph.out_ptr, graph.out_edges), (graph.in_ptr, graph.in_edges)):
-        e = np.asarray(edges).astype(np.int64)
-        if len(e) < 2:
-            continue
-        inside = np.ones(len(e) - 1, dtype=bool)
-        starts = np.asarray(ptr[1:-1], dtype=np.int64)
-        starts = starts[(starts > 0) & (starts < len(e))]
-        inside[starts - 1] = False  # pair (k-1, k) straddles a segment start
-        if not bool(np.all(np.diff(e)[inside] > 0)):
-            return False
-    return True
-
-
 def csr_time_ordered(graph) -> bool:
     """True when every CSR segment is in (time, position) order and
     positions are time-sorted, so position order is (time, position)
-    order everywhere. Checked once per graph (keyed on the arrays)."""
-    key = (id(graph.times), id(graph.out_edges), id(graph.in_edges))
-    try:
-        hit = _ORDERED.get(graph)
-    except TypeError:  # unhashable / not weak-referenceable graph
-        return _check_ordered(graph)
-    if hit is not None and hit[0] == key:
-        return hit[1]
-    ok = _check_ordered(graph)
-    try:
-        _ORDERED[graph] = (key, ok)
-    except TypeError:
-        pass
-    return ok
+    order everywhere. ``TemporalGraph`` checks this once at construction
+    (``csr_ordered``); its arrays are read-only afterwards."""
+    return bool(graph.csr_ordered)
 
 
 # -- label-blind tie order (identical to groups._hkey) -----------------------
@@ -821,9 +790,6 @@ def _group_by(keys: list, edges: list) -> dict:
 
 # -- per-plan constants ------------------------------------------------------
 
-_PREP: dict[int, tuple] = {}
-
-
 def _count_gate(having, var: str) -> int:
     """Smallest member count that can pass `having`, when its first
     evaluated conjunct is `count(distinct var) >= k` (or `> k`); 0 when
@@ -855,9 +821,8 @@ def _count_gate(having, var: str) -> int:
 
 
 def _prep(plan) -> dict:
-    hit = _PREP.get(id(plan))
-    if hit is not None and hit[0] is plan:
-        return hit[1]
+    """Per-call plan constants (roles dict, scatter count gate). Derived
+    afresh each call: about a microsecond, and nothing to go stale."""
     p: dict = {}
     if isinstance(plan, GroupPlan):
         roles = dict(plan.roles)
@@ -866,7 +831,6 @@ def _prep(plan) -> dict:
             p["gate"] = _count_gate(plan.having, roles["m"])
         else:
             p["gate"] = 0
-    _PREP[id(plan)] = (plan, p)
     return p
 
 
