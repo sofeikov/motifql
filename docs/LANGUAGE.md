@@ -181,6 +181,10 @@ key variables `K…` into one candidate. The `over` variables are the
 - **Same-timestamp edges are simultaneous.** When a member has several
   edges at its latest timestamp, the body is scored over every tied
   reading and the best wins — file order never picks between them.
+- **Scatter intermediaries exclude the source and destination.** A
+  self-loop `s→s` never forms a member, even beside a direct `s→d`
+  payment. Fan and gather groups count self-loop members as ordinary
+  members.
 
 ### 4.5 `having`: hard group constraints
 
@@ -249,12 +253,10 @@ when:
 4. **Scoping errors.** These are unbound variables, `prev` outside a
    quantifier over a path variable, a quantifier over a non-member variable,
    `having` without `group`, or aggregates outside a group.
-5. **Estimated cost above budget.** The planner computes a sanity bound on
-   expansions per anchor from live degree statistics: mean in-degree powers
-   summed to the max hops (measured ~1.7K mean expansions on HI-Small against
-   a ~1e5 estimate for `round_trip`, so the bound is deliberately loose).
-   It refuses motifs above the configured budget, saying which bound to
-   tighten.
+
+Cost is not a static check: every search carries runtime per-step fan-out
+and per-anchor expansion caps instead, hits are flagged `truncated`, and
+the evaluation reports truncation rates.
 
 ## 6. Why the fuzzy layer is cheap
 
@@ -270,7 +272,9 @@ edges. Their combined degree so far is an **upper bound** on the score of any
 completion. The matcher drops a partial binding as soon as that bound falls
 below the emit threshold, or below the best witness found so far when only
 the best is needed. At the same threshold, a fuzzy motif then explores roughly
-what the equivalent exact motif explores.
+what the equivalent exact motif explores. Open chains with no deferred
+conditions search only to min hops: a longer witness's min-hops suffix always
+accepts first and scores at least as high, so deeper branches can never win.
 
 **Group motifs** (fan-in, fan-out, scatter-gather). Aggregates and the
 relative quantifiers `most`, `few` and `@name` are **not** monotone as a group

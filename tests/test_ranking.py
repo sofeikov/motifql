@@ -7,6 +7,7 @@ score ties must break by a keyed hash — never by transfer_id directly.
 from datetime import date
 
 import polars as pl
+import pytest
 
 from eval.evaluate import rank_per_day, transfer_recall
 
@@ -45,3 +46,26 @@ def test_score_order_still_dominates():
     hits = (transfer_recall(ranked, [10])
             .filter(pl.col("group") == "ALL_FLAGGED")["n_hit"].item())
     assert hits == 10
+
+
+def test_secondary_direction_orders_ties() -> None:
+    # #15 A: the exact arm's tie-break sensitivity needs both directions.
+    df = _frame().with_columns(
+        pl.Series("score", [1.0] * 100),
+        pl.Series("amount_usd", [float(i) for i in range(100)]))
+    desc = rank_per_day(df, secondary_col="amount_usd").sort("transfer_id")
+    asc = rank_per_day(df, secondary_col="amount_usd",
+                       secondary_desc=False).sort("transfer_id")
+    assert desc.filter(pl.col("transfer_id") == 99)["rank"].item() == 1
+    assert asc.filter(pl.col("transfer_id") == 0)["rank"].item() == 1
+
+
+def test_resolve_crisp_alpha() -> None:
+    from eval.evaluate import resolve_crisp_alpha
+    assert resolve_crisp_alpha("emit", 0.5) == 0.5
+    assert resolve_crisp_alpha("support", 0.5) == 0.0
+    assert resolve_crisp_alpha("0.25", 0.5) == 0.25
+    with pytest.raises(ValueError):
+        resolve_crisp_alpha("1.5", 0.5)
+    with pytest.raises(ValueError):
+        resolve_crisp_alpha("bogus", 0.5)

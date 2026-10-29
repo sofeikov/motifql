@@ -54,6 +54,7 @@ _PLAN = None
 _LIBS = None
 _PRUNE = False
 _CRISP = False
+_CALPHA = 0.0
 _FLOOR = None
 
 
@@ -75,7 +76,8 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
         # globals for its arms, including floor=EXACT_FLOOR for the
         # fuzzy arm; RQ1 defaults are unchanged.)
         res = score_any(_GRAPH, int(pos), _PLAN, _LIBS,
-                        prune=_PRUNE, crisp=_CRISP, floor=_FLOOR)
+                        prune=_PRUNE, crisp=_CRISP, crisp_alpha=_CALPHA,
+                        floor=_FLOOR)
         top[i] = res.top_score
         found[i] = res.found
         exps[i] = res.expansions
@@ -153,15 +155,14 @@ def main(
     log.info("[2/5] compiling motifs from examples/amlworld.motif")
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
-    stats = graph.degree_histogram()
-    plans = {m: compile_motif(doc, m, stats=stats) for m in motifs_wanted}
+    plans = {m: compile_motif(doc, m) for m in motifs_wanted}
     for m, p in plans.items():
-        log.info("  %s: %s window=%.0fs emit=%.2f est=%.1f",
-                 m, type(p).__name__, p.window_s, p.emit, p.est_expansions)
+        log.info("  %s: %s window=%.0fs emit=%.2f",
+                 m, type(p).__name__, p.window_s, p.emit)
 
-    global _GRAPH, _PLAN, _LIBS, _PRUNE, _CRISP, _FLOOR
+    global _GRAPH, _PLAN, _LIBS, _PRUNE, _CRISP, _CALPHA, _FLOOR
     _GRAPH, _LIBS = graph, libs
-    _PRUNE, _CRISP, _FLOOR = False, False, None
+    _PRUNE, _CRISP, _CALPHA, _FLOOR = False, False, 0.0, None
 
     log.info("[3/5] replaying (top_score ranking) over train + holdout")
     scored: dict[str, dict[str, npt.NDArray]] = {}

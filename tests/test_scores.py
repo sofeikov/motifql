@@ -368,7 +368,7 @@ def test_real_cycle_top_score_matches_unpruned() -> None:
     # answer either way.
     g = TemporalGraph.from_parquet(HI_SMALL)
     doc = parse_text((Path("examples/amlworld.motif")).read_text())
-    plan = compile_motif(doc, "round_trip", stats=g.degree_histogram())
+    plan = compile_motif(doc, "round_trip")
     libs = libs_from_doc(doc)
     memb = pl.read_parquet("data/hi-small/pattern_members.parquet")
     last_tid = (
@@ -434,3 +434,34 @@ def test_exact_floor_matches_unpruned() -> None:
     assert exact.witness == unpruned.witness
     assert default.top_score == 0.0
     assert not exact.found  # found still uses the emit threshold
+
+
+def test_open_chain_searches_only_to_min_hops() -> None:
+    # G (#15): open chains with no deferred soft are decided at min hops.
+    # Every longer witness's min_hops suffix is itself an accepted witness
+    # scoring at least as high (min over a subset), and accept-before-
+    # descend records it first — so deeper search only adds expansions
+    # and truncation, never a better score or a different witness.
+    import dataclasses
+
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*3..6]-> (z:account)"
+        + " where e is time_ordered and span(e) <= 7d and a != z"
+        + " soft each e: e.gap is soon"
+        + " and each e: e.amount ~= prev.amount within 20%"
+        + " score min emit when score >= 0.5 }"
+    )
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    assert plan.deferred is None and not plan.closed
+    assert (plan.min_hops, plan.max_hops) == (3, 3)
+    rows = [(i * 60, "001", f"A{i}", "001", f"A{i + 1}", 100.0) for i in range(6)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    wide = dataclasses.replace(plan, max_hops=6)
+    for prune in (False, True):
+        narrow = score(g, 5, plan, libs, prune=prune)
+        assert narrow.found and narrow.score == pytest.approx(1.0)
+        full = score(g, 5, wide, libs, prune=prune)
+        assert (full.found, full.score, full.witness, full.top_score) == (
+            narrow.found, narrow.score, narrow.witness, narrow.top_score)
+        assert full.expansions > narrow.expansions

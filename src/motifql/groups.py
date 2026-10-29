@@ -53,10 +53,18 @@ log = logging.getLogger("groups")
 
 # Hub caps: per adjacency-list cut (most recent first) and per-anchor budget.
 # The fan executor touches one list; scatter touches up to three levels, so
-# its sender fan-out gets its own tighter cap below.
+# it gets its own looser caps below.
 DEFAULT_MAX_FANOUT = 1_000
 DEFAULT_MAX_EXPANSIONS = 50_000
-SCATTER_MAX_SENDERS = 100
+# Scatter caps (#15 #3): the old 100-sender / shared-1000 caps hid whole
+# (s, d) groups on 6%+ of holdout anchors, zeroing background candidates
+# and biasing recall up. Sized ~4x above the largest holdout-sampled
+# lookups (544 senders, 119k out-edges), so they are a catastrophic
+# backstop, not a semantic filter. Flags retained: if a bigger dataset
+# binds them, the truncation rate shows it.
+SCATTER_MAX_SENDERS = 2_000
+SCATTER_MAX_LIST = 500_000
+SCATTER_MAX_EXPANSIONS = 2_000_000
 BUTTERFLY_MAX_PARTNERS = 50
 # Cap on same-timestamp readings tried per member (F1): real ties are a
 # handful; beyond this the keyed-hash order below is cut and truncated set.
@@ -212,35 +220,35 @@ def _combine(parts: list[float], tnorm: str) -> float:
 
 
 def _eval_soft(expr: object, ctx: _Ctx, libs, tnorm: str,
-               crisp: bool = False) -> tuple[float, list[tuple]]:
+               crisp: bool = False, crisp_alpha: float = 0.0) -> tuple[float, list[tuple]]:
     """Group soft score plus per-conjunct explanation degrees."""
     if isinstance(expr, And):
         parts: list[float] = []
         degs: list[tuple] = []
         for item in expr.items:
-            s, d = _eval_soft(item, ctx, libs, tnorm, crisp)
+            s, d = _eval_soft(item, ctx, libs, tnorm, crisp, crisp_alpha)
             parts.append(s)
             degs.extend(d)
         return _combine(parts, tnorm), degs
     if isinstance(expr, Or):
         best, best_degs = 0.0, []
         for item in expr.items:
-            s, d = _eval_soft(item, ctx, libs, tnorm, crisp)
+            s, d = _eval_soft(item, ctx, libs, tnorm, crisp, crisp_alpha)
             if s >= best:
                 best, best_degs = s, d
         return best, best_degs
     if isinstance(expr, Not):
-        s, _ = _eval_soft(expr.body, ctx, libs, tnorm, crisp)
+        s, _ = _eval_soft(expr.body, ctx, libs, tnorm, crisp, crisp_alpha)
         return 1.0 - s, [(f"not ({_label(expr.body)})", 1.0 - s, None)]
     if isinstance(expr, Quantified):
-        return _eval_quant(expr, ctx, libs, tnorm, crisp)
+        return _eval_quant(expr, ctx, libs, tnorm, crisp, crisp_alpha)
     if isinstance(expr, Approx):
         x = _arith(expr.left, ctx)
         y = _arith(expr.right, ctx)
-        d = crisp_degree(tol_degree(expr.tol, x, y), crisp)
+        d = crisp_degree(tol_degree(expr.tol, x, y), crisp, crisp_alpha)
         return d, [(_label(expr), d, None)]
     if isinstance(expr, IsTerm):
-        d = _eval_term(expr, ctx, libs, crisp)
+        d = _eval_term(expr, ctx, libs, crisp, crisp_alpha)
         return d, [(_label(expr), d, None)]
     if isinstance(expr, Comparison):
         x = _arith(expr.left, ctx)
@@ -253,7 +261,8 @@ def _eval_soft(expr: object, ctx: _Ctx, libs, tnorm: str,
     raise ValueError(f"cannot evaluate group soft: {expr!r}")
 
 
-def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
+def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False,
+               crisp_alpha: float = 0.0) -> float:
     term_defs, _ = libs
     if node.term == "time_ordered":
         return 1.0
@@ -261,7 +270,8 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
     if isinstance(base, Call) and base.name == "span":
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, ctx.span)
-        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
+        return (1.0 - crisp_degree(deg, crisp, crisp_alpha) if node.negated
+                else crisp_degree(deg, crisp, crisp_alpha))
     if isinstance(base, Call):
         vals = _edge_values(base, ctx)
         x = float(vals[0]) if vals else 0.0
@@ -277,12 +287,13 @@ def _eval_term(node: IsTerm, ctx: _Ctx, libs, crisp: bool = False) -> float:
             x = float(max(vals)) if vals else 0.0
         span_args = resolve_term_args(node.term, node.args, term_defs)
         deg = term_degree(term_defs[node.term].shape, span_args, x)
-        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
+        return (1.0 - crisp_degree(deg, crisp, crisp_alpha) if node.negated
+                else crisp_degree(deg, crisp, crisp_alpha))
     raise ValueError(f"cannot evaluate group term use: {node!r}")
 
 
 def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str,
-                crisp: bool = False) -> tuple[float, list[tuple]]:
+                crisp: bool = False, crisp_alpha: float = 0.0) -> tuple[float, list[tuple]]:
     term_defs, quants = libs
     per_member = ctx.member_vals.get(node.var, {})
     hits: list[float] = []
@@ -292,7 +303,7 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str,
         # whose readings all skip is skipped, as before.
         ds = []
         for vals in readings:
-            d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp)
+            d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp, crisp_alpha)
             if d is not None:
                 ds.append(d)
         if not ds:
@@ -328,33 +339,34 @@ def _eval_quant(node: Quantified, ctx: _Ctx, libs, tnorm: str,
 
 
 def _eval_member(node: object, vals: dict, ctx: _Ctx, libs, tnorm: str,
-                 crisp: bool = False) -> float | None:
+                 crisp: bool = False, crisp_alpha: float = 0.0) -> float | None:
     """Degree of one quantifier body for one member; None skips the member."""
     term_defs, _ = libs
     if isinstance(node, And):
-        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp) for i in node.items]
+        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp, crisp_alpha) for i in node.items]
         ds = [d for d in ds if d is not None]
         return _combine(ds, tnorm) if ds else None
     if isinstance(node, Or):
-        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp) for i in node.items]
+        ds = [_eval_member(i, vals, ctx, libs, tnorm, crisp, crisp_alpha) for i in node.items]
         ds = [d for d in ds if d is not None]
         return max(ds) if ds else None
     if isinstance(node, Not):
-        d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp)
+        d = _eval_member(node.body, vals, ctx, libs, tnorm, crisp, crisp_alpha)
         return None if d is None else 1.0 - d
     if isinstance(node, Approx):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
         if x is None or y is None:
             return None
-        return crisp_degree(tol_degree(node.tol, x, y), crisp)
+        return crisp_degree(tol_degree(node.tol, x, y), crisp, crisp_alpha)
     if isinstance(node, IsTerm) and node.term in term_defs:
         v = _member_arith(node.base, vals, ctx)
         if v is None:
             return None
         tdef = term_defs[node.term]
         deg = term_degree(tdef.shape, resolve_term_args(node.term, node.args, term_defs), v)
-        return 1.0 - crisp_degree(deg, crisp) if node.negated else crisp_degree(deg, crisp)
+        return (1.0 - crisp_degree(deg, crisp, crisp_alpha) if node.negated
+                else crisp_degree(deg, crisp, crisp_alpha))
     if isinstance(node, Comparison):
         x = _member_arith(node.left, vals, ctx)
         y = _member_arith(node.right, vals, ctx)
@@ -454,7 +466,8 @@ def _finish(name: str, witness: list[int], graph, s: float, degs: list[tuple],
 
 # -- fan executor --------------------------------------------------------
 
-def _score_fan(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def _score_fan(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+               crisp_alpha: float = 0.0) -> GroupResult:
     roles = dict(plan.roles)
     key_is_sender = roles["dir"] == "out-key-sender"
     anchor_t = int(graph.times[anchor_pos])
@@ -503,13 +516,14 @@ def _score_fan(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> Group
         return GroupResult(False, (), 0.0, (), truncated, expansions, 0.0)
     if plan.soft is None:
         return _finish(plan.name, all_edges, graph, 1.0, [], truncated, expansions, plan.emit)
-    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
+    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp, crisp_alpha)
     return _finish(plan.name, all_edges, graph, s, degs, truncated, expansions, plan.emit)
 
 
 # -- scatter executor ------------------------------------------------------
 
-def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+                   crisp_alpha: float = 0.0) -> GroupResult:
     roles = dict(plan.roles)
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
@@ -526,11 +540,11 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> G
     in_d, _ = graph.incoming(d_node, anchor_t, window_s)
     truncated = False
     expansions = len(in_m0) + len(in_d) + 1
-    if len(in_m0) > DEFAULT_MAX_FANOUT:
-        in_m0 = in_m0[-DEFAULT_MAX_FANOUT:]
+    if len(in_m0) > SCATTER_MAX_LIST:
+        in_m0 = in_m0[-SCATTER_MAX_LIST:]
         truncated = True
-    if len(in_d) > DEFAULT_MAX_FANOUT:
-        in_d = in_d[-DEFAULT_MAX_FANOUT:]
+    if len(in_d) > SCATTER_MAX_LIST:
+        in_d = in_d[-SCATTER_MAX_LIST:]
         truncated = True
     # Most recent leg1 edge per sender into m0.
     leg1_by_sender: dict[int, int] = {}
@@ -550,15 +564,19 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> G
             continue  # s != d guard
         out_s, _ = graph.outgoing(s, anchor_t, window_s)
         expansions += len(out_s)
-        if len(out_s) > DEFAULT_MAX_FANOUT:
-            out_s = out_s[-DEFAULT_MAX_FANOUT:]
+        if len(out_s) > SCATTER_MAX_LIST:
+            out_s = out_s[-SCATTER_MAX_LIST:]
             truncated = True
         mids: dict[int, list[int]] = {}
         for e in sorted(out_s.tolist(), key=lambda p: (int(graph.times[p]), int(p))):
             mids.setdefault(int(graph.to[int(e)]), []).append(int(e))
         members: dict[int, tuple[list[int], list[int]]] = {}
         for mid, leg1s in mids.items():
-            if mid == d_node:
+            # F8 (#15): the source is never its own intermediary. A
+            # self-loop s→s as leg1 plus the direct s→d payment as
+            # leg2 would otherwise count as a member; truth has no
+            # self-loops, but 11.6% of background transfers are.
+            if mid == d_node or mid == s:
                 continue
             if mid == m0:
                 leg2s = leg2s_by_mid.get(mid, []) + [int(anchor_pos)]
@@ -576,9 +594,10 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> G
             valid_l1 = [e for e in leg1s if int(graph.times[e]) < latest_l2]
             valid_l2 = [e for e in leg2s if int(graph.times[e]) > earliest_l1]
             members[mid] = (valid_l1, valid_l2)
-        if m0 not in members and s in leg1_by_sender:
+        if m0 not in members and m0 != s and s in leg1_by_sender:
             # The anchor's own leg1 with no separate leg2 record: anchor is leg2.
             # (Only reachable when caps cut m0's out-edges; normally m0 pairs above.)
+            # F8 (#15): m0 == s would re-add the source as its own mid.
             leg1 = leg1_by_sender[s]
             if int(graph.times[int(anchor_pos)]) > int(graph.times[leg1]):
                 members[m0] = ([int(leg1)], [int(anchor_pos)])
@@ -621,12 +640,13 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> G
         if plan.soft is None:
             s_score, degs = 1.0, []
         else:
-            s_score, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
+            s_score, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm,
+                                       crisp, crisp_alpha)
         witness = sorted({e for l1s, l2s in members.values() for e in (*l1s, *l2s)},
                          key=lambda p: (int(graph.times[p]), int(p)))
         if best is None or s_score > best[0]:
             best = (s_score, degs, witness)
-        if expansions > DEFAULT_MAX_EXPANSIONS:
+        if expansions > SCATTER_MAX_EXPANSIONS:
             truncated = True
             break
     if best is None:
@@ -637,7 +657,8 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> G
 
 # -- gather executor -------------------------------------------------------
 
-def _score_gather(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def _score_gather(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+                   crisp_alpha: float = 0.0) -> GroupResult:
     roles = dict(plan.roles)
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
@@ -713,14 +734,15 @@ def _score_gather(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> Gr
     if plan.soft is None:
         return _finish(plan.name, g_list + p_list, graph, 1.0, [], truncated,
                        expansions, plan.emit)
-    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp)
+    s, degs = _eval_soft(plan.soft, ctx, libs, plan.score_tnorm, crisp, crisp_alpha)
     return _finish(plan.name, g_list + p_list, graph, s, degs, truncated,
                    expansions, plan.emit)
 
 
 # -- butterfly executor ----------------------------------------------------
 
-def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+                     crisp_alpha: float = 0.0) -> GroupResult:
     window_s = plan.window_s
     anchor_t = int(graph.times[anchor_pos])
     a_node = int(graph.frm[anchor_pos])
@@ -751,7 +773,12 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
         if int(graph.frm[e]) != a_node:
             x2_edges.setdefault(int(graph.frm[e]), []).append(e)
     expansions = len(out_a) + len(in_b) + 1
-    x2_nodes = sorted(x2_edges)
+    # Most-recent-first x2 order, like every other cap: on budget
+    # truncation the oldest partners are cut, not the highest node ids
+    # (#15: ids track first-seen account age, cutting newest first).
+    x2_nodes = sorted(x2_edges,
+                      key=lambda x: max(int(graph.times[e]) for e in x2_edges[x]),
+                      reverse=True)
     # Per-x2 outgoing map (capped): which y2 does x2 pay within the window?
     cross: dict[int, dict[int, list[int]]] = {}
     for x2 in x2_nodes:
@@ -782,7 +809,8 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
             return 1.0
         tdef, targs, negated = grade
         d = term_degree(tdef.shape, targs, span_s)
-        return 1.0 - crisp_degree(d, crisp) if negated else crisp_degree(d, crisp)
+        return (1.0 - crisp_degree(d, crisp, crisp_alpha) if negated
+                else crisp_degree(d, crisp, crisp_alpha))
 
     def _realize(lst: list[int], t: int) -> int:
         # One leg with the binding's min time t: prefer an edge exactly at
@@ -798,8 +826,9 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
     earliest = anchor_t - window_s
     for x2, x2_to_b_list in x2_edges.items():
         if x2 not in cross:
-            # Truncated out of the cross map (built in id order, scored in
-            # time order): skip it, not everything after it.
+            # Truncated out of the cross map: skip it, not everything
+            # after it (scoring order is oldest-first, the build keeps
+            # the most recent, so skips land up front).
             continue
         for y2, a_to_y2_list in y2_edges.items():
             x2_to_y2_list = cross[x2].get(y2)
@@ -836,7 +865,8 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) ->
 # -- dispatch --------------------------------------------------------------
 
 def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
-              crisp: bool = False, floor: float | None = None):
+              crisp: bool = False, crisp_alpha: float = 0.0,
+              floor: float | None = None):
     """Score one anchor against any Oct 30 plan type.
 
     Ranking callers want exact top_scores: pass `floor=EXACT_FLOOR`
@@ -844,35 +874,40 @@ def score_any(graph, anchor_pos: int, plan, libs, prune: bool = True,
     `prune=False`, which additionally risks truncation. Under default
     pruning a path motif's top_score can only be 0 or >= emit, so
     every below-emit anchor ties at 0 instead of ranking by its best
-    witness. With crisp=True every soft leaf is support-thresholded
-    (RQ2 exact arm); path pruning stays sound because crisp degrees
-    still bound their completions. `floor` is path-only (groups
-    never prune) and `found` still uses the emit threshold.
+    witness. With crisp=True every soft leaf is α-cut (support at
+    α=0, `d >= α` above; RQ2 exact arm); path pruning stays sound
+    because crisp degrees still bound their completions. `floor` is
+    path-only (groups never prune) and `found` still uses the emit
+    threshold.
     """
     from motifql import planner as _planner
 
     if isinstance(plan, _planner.PathPlan):
         from motifql.matcher import score as _path_score
         return _path_score(graph, anchor_pos, plan, libs, prune=prune, crisp=crisp,
-                           floor=floor)
+                           crisp_alpha=crisp_alpha, floor=floor)
     if isinstance(plan, _planner.GroupPlan):
-        return score_group(graph, anchor_pos, plan, libs, crisp=crisp)
+        return score_group(graph, anchor_pos, plan, libs, crisp=crisp,
+                           crisp_alpha=crisp_alpha)
     if isinstance(plan, _planner.ButterflyPlan):
-        return score_butterfly(graph, anchor_pos, plan, libs, crisp=crisp)
+        return score_butterfly(graph, anchor_pos, plan, libs, crisp=crisp,
+                               crisp_alpha=crisp_alpha)
     raise TypeError(f"unknown plan type: {type(plan).__name__}")
 
 
-def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+                crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a GroupPlan by kind."""
     if plan.kind == "fan":
-        return _score_fan(graph, anchor_pos, plan, libs, crisp)
+        return _score_fan(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
     if plan.kind == "scatter":
-        return _score_scatter(graph, anchor_pos, plan, libs, crisp)
+        return _score_scatter(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
     if plan.kind == "gather":
-        return _score_gather(graph, anchor_pos, plan, libs, crisp)
+        return _score_gather(graph, anchor_pos, plan, libs, crisp, crisp_alpha)
     raise ValueError(f"unknown group kind: {plan.kind}")
 
 
-def score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False) -> GroupResult:
+def score_butterfly(graph, anchor_pos: int, plan, libs, crisp: bool = False,
+                    crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a ButterflyPlan."""
-    return _score_butterfly(graph, anchor_pos, plan, libs, crisp)
+    return _score_butterfly(graph, anchor_pos, plan, libs, crisp, crisp_alpha)

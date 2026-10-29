@@ -436,10 +436,10 @@ def test_butterfly_grades_named_span_term() -> None:
 
 
 def test_butterfly_skips_truncated_partner_without_discarding_rest(monkeypatch) -> None:
-    # M4: cross entries are built in id order but scored in time order,
-    # so under truncation a missing key must `continue`, not `break` and
-    # discard later partners that do have entries. B (early, truncated
-    # out) precedes A (late, complete core) in scoring order.
+    # M4: under truncation a missing cross key must `continue`, not
+    # `break` and discard later partners that do have entries. B
+    # (early, truncated out) precedes A (late, complete core) in
+    # scoring order.
     monkeypatch.setattr("motifql.groups.DEFAULT_MAX_EXPANSIONS", 4)
     g = TemporalGraph.from_transfers(_frame([
         (0, "001", "A", "002", "ZZ", 50.0),
@@ -453,6 +453,27 @@ def test_butterfly_skips_truncated_partner_without_discarding_rest(monkeypatch) 
     res = score_butterfly(g, 5, compile_motif(doc, "bf"), libs_from_doc(doc))
     assert res.truncated
     assert res.found and res.score == pytest.approx(1.0)
+
+
+def test_butterfly_truncation_cuts_oldest_partners_first(monkeypatch) -> None:
+    # #15: cross entries were built in node-id order, so truncation cut
+    # the highest ids (newest accounts) first. Like every other cap,
+    # the oldest partners go first now. Budget admits one cross entry:
+    # O (id 0, stale core, span 50h) vs N (id 3, fresh core) — the
+    # fresh core must survive.
+    monkeypatch.setattr("motifql.groups.DEFAULT_MAX_EXPANSIONS", 5)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "O", "002", "Y1", 50.0),
+        (10, "001", "O", "002", "Y2", 50.0),
+        (2900, "001", "N", "002", "Y1", 50.0),
+        (2910, "001", "N", "002", "Y2", 50.0),
+        (2920, "001", "X1", "002", "Y2", 50.0),
+        (3000, "001", "X1", "002", "Y1", 50.0),
+    ]))
+    doc = _butterfly_doc("span(all) is soon")
+    res = score_butterfly(g, 5, compile_motif(doc, "bf"), libs_from_doc(doc))
+    assert res.truncated
+    assert res.found and res.top_score == pytest.approx(1.0)
 
 
 def test_butterfly_without_soft_scores_one() -> None:
@@ -566,3 +587,94 @@ def test_same_minute_ties_are_file_order_free() -> None:
     fa = score_group(TemporalGraph.from_transfers(_frame(fbase)), 3, fplan, flibs)
     fb = score_group(TemporalGraph.from_transfers(_frame(fswapped)), 3, fplan, flibs)
     assert fa.top_score == fb.top_score == pytest.approx(1.0)
+
+
+def test_scatter_source_is_never_its_own_mid() -> None:
+    # F8 (#15): a self-loop s→s as leg1 plus the direct s→d payment as
+    # leg2 must not count as a member. Two genuine mids plus the
+    # degenerate pair score several(2) = 0.5, not several(3) = 1.0.
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "001", "S", 100.0),
+        (10, "001", "S", "002", "M1", 100.0),
+        (12, "001", "S", "002", "M2", 100.0),
+        (15, "001", "S", "003", "D", 100.0),
+        (20, "002", "M1", "003", "D", 100.0),
+        (25, "002", "M2", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 5, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert sorted(int(g.transfer_id[e]) for e in res.witness) == [1, 2, 4, 5]
+
+
+def test_scatter_fallback_skips_source_as_mid() -> None:
+    # Same guard on the anchor-fallback route: with only a self-loop
+    # and direct payments, m0 == s must not become a member through
+    # the fallback. having >= 1 plus a count==1 soft pin the empty
+    # group (several(1) reads 0 and would hide the bug).
+    doc = parse_text(
+        "motif t { match (s:account) -[leg1:transfer]-> (m:account)"
+        " -[leg2:transfer]-> (d:account)"
+        " group by s, d over m window 2d"
+        " where leg2.time > leg1.time and s != d"
+        " having count(distinct m) >= 1"
+        " soft count(distinct m) ~= 1 within 1"
+        " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S", "001", "S", 100.0),
+        (10, "001", "S", "003", "D", 100.0),
+        (20, "001", "S", "003", "D", 100.0),
+    ]))
+    res = score_group(g, 2, plan, libs)
+    assert not res.found and res.top_score == 0.0
+
+
+def test_scatter_sender_cap_does_not_hide_oldest_group() -> None:
+    # #15 #3: the 100-sender cap cut the oldest senders first, hiding
+    # whole (s, d) groups. 101 senders into m0 where only the oldest
+    # sender's group pairs a second mid: the group must score, clean.
+    rows = [(0, "001", "S0", "002", "M0", 100.0),
+            (1, "001", "S0", "002", "M1", 100.0)]
+    rows += [(2 + i, "001", f"S{i + 1}", "002", "M0", 100.0) for i in range(100)]
+    rows += [(200, "002", "M1", "003", "D", 100.0),
+             (210, "002", "M0", "003", "D", 100.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    doc = _doc()
+    res = score_group(g, len(rows) - 1, compile_motif(doc, "scatter_gather"),
+                      libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert res.truncated is False
+
+
+def test_scatter_outgoing_cap_does_not_hide_cut_mids() -> None:
+    # Same hiding class on the per-sender outgoing list: 1001 mids where
+    # only the oldest (first cut at 1000) pairs a leg2. Both mids must
+    # pair, clean.
+    rows = [(0, "001", "S", "002", "M0", 100.0)]
+    rows += [(1 + i, "001", "S", "002", f"M{i + 1}", 100.0) for i in range(1000)]
+    rows += [(2000, "002", "M0", "003", "D", 100.0),
+             (2010, "002", "M1000", "003", "D", 100.0)]
+    g = TemporalGraph.from_transfers(_frame(rows))
+    doc = _doc()
+    res = score_group(g, len(rows) - 1, compile_motif(doc, "scatter_gather"),
+                      libs_from_doc(doc))
+    assert res.top_score == pytest.approx(0.5)
+    assert res.truncated is False
+
+
+def test_scatter_caps_still_flag_when_they_bind(monkeypatch) -> None:
+    # The raised caps stay a backstop: force them to bind and the
+    # truncation flag must fire.
+    import motifql.groups as groups_mod
+    monkeypatch.setattr(groups_mod, "SCATTER_MAX_SENDERS", 1)
+    g = TemporalGraph.from_transfers(_frame([
+        (0, "001", "S1", "002", "M0", 100.0),
+        (1, "001", "S2", "002", "M0", 100.0),
+        (10, "001", "S1", "002", "M1", 100.0),
+        (20, "002", "M1", "003", "D", 100.0),
+        (30, "002", "M0", "003", "D", 100.0),
+    ]))
+    doc = _doc()
+    res = score_group(g, 4, compile_motif(doc, "scatter_gather"), libs_from_doc(doc))
+    assert res.truncated is True

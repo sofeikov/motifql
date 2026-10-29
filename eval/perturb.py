@@ -139,6 +139,7 @@ def main(
     budget: Annotated[bool, typer.Option(help="Budget-recall mode: full holdout replay + ranking per level.")] = False,
     budget_levels: Annotated[str, typer.Option(help="Levels for budget mode.")] = ",".join(f"{p}:{f}" for p, f in BUDGET_LEVELS),
     budgets: Annotated[str, typer.Option(help="Alerts/day budgets (budget mode).")] = "50,100,500,1000,5000",
+    crisp_alpha: Annotated[str, typer.Option(help="Exact-arm α-cut: `emit`, `support` or float.")] = "emit",
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     level_list = [tuple(float(x) for x in lv.split(":")) for lv in
@@ -168,6 +169,10 @@ def main(
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
     plans = {m: compile_motif(doc, m) for m in motifs_wanted}
+    alphas = {m: evaluate.resolve_crisp_alpha(crisp_alpha, plans[m].emit)
+              for m in motifs_wanted}
+    log.info("  crisp α: %s",
+             ", ".join(f"{m}={a:g}" for m, a in alphas.items()))
 
     rows: list[dict] = []
     btr_rows, binst_rows = [], []
@@ -207,11 +212,11 @@ def main(
             for m in motifs_wanted:
                 plan = plans[m]
                 rq1._PLAN = plan
-                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+                rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, True, alphas[m], None
                 cr_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} crisp")
                 scores[f"{m}__crisp"] = cr_top
                 # Exact branch-and-bound (review #14.1): no screen.
-                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+                rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, False, 0.0, EXACT_FLOOR
                 fz_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} fuzzy")
                 scores[f"{m}__fuzzy"] = fz_top
             hold_base = evaluate.holdout_frame(
@@ -222,6 +227,9 @@ def main(
             inst2 = _resplit(pdf, memb, inst)
             n_comp = inst2.filter(pl.col("split") == "holdout").height
             log.info("  holdout-completable instances after drift: %d", n_comp)
+            # Hash tie-break only: at a calibrated α the emitter set fits
+            # inside the budgets, so ordering barely matters (rq2 proves
+            # the sensitivity separately with --exact-order).
             btr, binst = evaluate.recall_at_budgets(hold_base, memb, inst2, scores, budget_list)
             tag = {"amount_pct": pct, "gap_factor": gf}
             btr_rows.append(btr.with_columns(pl.lit(tag["amount_pct"]).alias("amount_pct"),
@@ -242,10 +250,10 @@ def main(
             apos = _positions(tids, anchor_ids)
             apos_of = {t: i for i, t in enumerate(anchor_ids)}
             is_truth = np.array([t in truth_set for t in anchor_ids])
-            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+            rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, True, alphas[m], None
             cr_top, _, _, _ = rq1._replay(apos, workers, f"{m} crisp")
             # Exact branch-and-bound (review #14.1): no screen.
-            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+            rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, False, 0.0, EXACT_FLOOR
             fz_top, _, _, _ = rq1._replay(apos, workers, f"{m} fuzzy")
             emit = plan.emit
             inst_idx = {iid: np.array([apos_of[t] for t in tids_i])
@@ -256,7 +264,8 @@ def main(
                 caught = {iid for iid, idx in inst_idx.items()
                           if (top[idx] >= emit).any()}
                 rows.append({
-                    "motif": m, "arm": arm, "amount_pct": pct, "gap_factor": gf,
+                    "motif": m, "arm": arm, "alpha": alphas[m] if arm == "crisp" else None,
+                    "amount_pct": pct, "gap_factor": gf,
                     "n_truth": len(truth_ids),
                     "transfer_recall": float((t_top >= emit).mean()) if len(t_top) else 0.0,
                     "n_inst": len(tm), "inst_recall": len(caught) / len(tm) if tm else 0.0,
@@ -273,8 +282,13 @@ def main(
     if budget:
         split = [pl.col("key").str.split("__").list.get(0).alias("motif"),
                  pl.col("key").str.split("__").list.get(1).alias("arm")]
-        pl.concat(btr_rows).with_columns(split).write_csv(out / "rq2_perturb_budget_transfer.csv")
-        pl.concat(binst_rows).with_columns(split).write_csv(out / "rq2_perturb_budget_instance.csv")
+        # Separate pass: with_columns expressions cannot see the motif
+        # column the split pass creates.
+        alpha_of = pl.col("motif").replace_strict(alphas, default=None).alias("alpha")
+        pl.concat(btr_rows).with_columns(split).with_columns(alpha_of).write_csv(
+            out / "rq2_perturb_budget_transfer.csv")
+        pl.concat(binst_rows).with_columns(split).with_columns(alpha_of).write_csv(
+            out / "rq2_perturb_budget_instance.csv")
         log.info("  wrote rq2_perturb_budget_{transfer,instance}.csv")
     else:
         pl.from_dicts(rows).write_csv(out / "rq2_perturb.csv")

@@ -1,6 +1,6 @@
 """MotifQL static checks: LANGUAGE.md section 5 (Oct 29, compiler step 2).
 
-Five checks, each with a stable code, the location, the problem and a
+Four checks, each with a stable code, the location, the problem and a
 suggested fix — the messages feed straight back to the model in the Oct 31
 repair loop, so they say what to do, not just what is wrong:
 
@@ -13,8 +13,11 @@ repair loop, so they say what to do, not just what is wrong:
 * E_SCOPE  — scoping: unbound variables, prev outside a path quantifier,
              quantifiers over non-members, having without group,
              aggregates outside a group, unknown term/quantifier names.
-* E_COST   — estimated expansions per anchor above budget (needs live
-             degree stats; skipped without them, wired by the planner).
+
+Cost is not a static check (#15 #5): expansion estimates from global
+degree statistics were wrong by orders of magnitude and refused
+feasible motifs. Runtime fan-out/expansion caps bound every search
+instead, with truncation flagged per result.
 
 Usage:
     from motifql.parser import parse_file
@@ -37,7 +40,7 @@ from motifql.parser import (
 
 @dataclass(frozen=True)
 class CheckError:
-    code: str      # E_TIME | E_UNIT | E_CRISP | E_SCOPE | E_COST
+    code: str      # E_TIME | E_UNIT | E_CRISP | E_SCOPE
     motif: str
     line: int
     problem: str
@@ -484,15 +487,7 @@ def _has_span_bound(where: object) -> bool:
     return False
 
 
-def check_document(doc: Document, stats=None) -> list[CheckError]:
-    """Run every static check over a parsed document (E_COST needs stats)."""
+def check_document(doc: Document) -> list[CheckError]:
+    """Run every static check over a parsed document."""
     checker = _Checker(doc)
-    errors = checker.check_document(doc)
-    if stats is not None:
-        errors.extend(_check_cost(doc, stats))
-    return errors
-
-
-def _check_cost(doc: Document, stats) -> list[CheckError]:
-    # Wired by the planner (Oct 29 step 4) with live degree statistics.
-    return []
+    return checker.check_document(doc)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RQ2 harness: fuzzy vs exact (crisp) recall at fixed alert budgets (Nov 1).
+"""RQ2 harness: fuzzy vs exact (α-cut crisp) recall at fixed budgets.
 
 Level-0 table: replays the fuzzy-sensitive motifs (round_trip,
 layering_chain, scatter_gather) over the holdout split twice, both
@@ -11,15 +11,23 @@ spread sample. Binarity/differential asserts are scoped per motif
 by the safety predicates (most/few/named grade under crisp;
 `not` breaks the differential) and decided before any replay.
 
-Ranking and recall go through the shared `eval/evaluate.py` protocol
-at the RQ1 budgets, so the rows are comparable by construction. The
-harness also asserts the crisp differential — crisp_top ==
-(fuzzy_top > 0) anchor-wise. Any mismatch is an evaluator bug, not a
-finding: crisping thresholds the same leaves the fuzzy score combines.
+The exact arm is a per-leaf α-cut (#15 A): the old support boundary
+(α=0) is the loosest exact rule a motif allows, so every candidate
+tied at 1.0 and ranked by lottery. The default α is each motif's own
+emit threshold — no new fitting — with `support` reproducing the old
+arm. At α>0 the differential is crisp_top == (fuzzy_top >= α) on
+`min` motifs (product has no such equality); any mismatch is an
+evaluator bug, not a finding.
+
+--exact-order ranks the binary exact arm under several label-blind
+tie-breaks (hash, amount desc/asc): at a calibrated α the emitter
+set fits inside operational budgets, so the lottery should barely
+matter — the sensitivity rows prove it instead of assuming it.
 
 Usage:
     uv run eval/rq2.py --data data/hi-small --workers 16
     uv run eval/rq2.py --data data/hi-small --max-anchors 20000 --workers 4
+    uv run eval/rq2.py --data data/hi-small --crisp-alpha support
 """
 
 from __future__ import annotations
@@ -54,6 +62,8 @@ def main(
     holdout: Annotated[str, typer.Option(help="Holdout day range, inclusive.")] = f"{splits.HOLDOUT_START},{splits.HOLDOUT_END}",
     motifs: Annotated[str, typer.Option(help="Comma-separated motif names.")] = ",".join(MOTIFS),
     budgets: Annotated[str, typer.Option(help="Alerts/day budgets, comma-separated.")] = "50,100,500,1000,5000",
+    crisp_alpha: Annotated[str, typer.Option(help="Exact-arm α-cut: `emit`, `support` or float.")] = "emit",
+    exact_order: Annotated[str, typer.Option(help="Exact tie-breaks: hash,amount_desc,amount_asc,all.")] = "all",
     max_anchors: Annotated[int, typer.Option(help="Cap holdout anchors (0 = all).")] = 0,
     verify_prune: Annotated[int, typer.Option(help="Crisp pruned-vs-unpruned check anchors (0 = off).")] = 20000,
     workers: Annotated[int, typer.Option(help="Worker processes (1 = serial).")] = 16,
@@ -63,6 +73,11 @@ def main(
     ho0, ho1 = (date.fromisoformat(s) for s in holdout.split(","))
     motifs_wanted = [m.strip() for m in motifs.split(",") if m.strip()]
     budget_list = [int(b) for b in budgets.split(",")]
+    orders = [o.strip() for o in exact_order.split(",") if o.strip()]
+    if orders == ["all"]:
+        orders = ["hash", "amount_desc", "amount_asc"]
+    if not orders or any(o not in ("hash", "amount_desc", "amount_asc") for o in orders):
+        raise SystemExit(f"--exact-order {exact_order!r}: use hash,amount_desc,amount_asc,all")
     out.mkdir(parents=True, exist_ok=True)
 
     log.info("[1/4] loading transfers and building graph (queries look back)")
@@ -79,17 +94,20 @@ def main(
     log.info("[2/4] compiling motifs from examples/amlworld.motif")
     doc = parse_file(Path("examples/amlworld.motif"))
     libs = libs_from_doc(doc)
-    # No stats: the cost check is a live-engine guard, and the refit
-    # layering (*5..8) trips E_COST under it (est ~1e8 vs 1e7 budget)
-    # while measuring ~1e3 expansions in practice — the estimate is
-    # loose by design (LANGUAGE.md section 5). The replay records the
-    # true per-anchor cost in rq2_summary.csv instead.
     plans = {m: compile_motif(doc, m) for m in motifs_wanted}
+
+    # Exact-arm α per motif, decided BEFORE any replay: the motif's
+    # own emit by default (no new fitting), `support` for the old arm.
+    alphas = {m: evaluate.resolve_crisp_alpha(crisp_alpha, plans[m].emit)
+              for m in motifs_wanted}
+    log.info("  crisp α: %s",
+             ", ".join(f"{m}={a:g}" for m, a in alphas.items()))
 
     # Check scope per motif, decided BEFORE any replay (review
     # #14.6 + Codex P2): binarity needs no mean-grading quants, the
-    # differential additionally no `not`. Out-of-scope checks are
-    # skipped with a log line, never abort after a full replay.
+    # differential additionally no `not` (and `min` at α>0).
+    # Out-of-scope checks are skipped with a log line, never abort
+    # after a full replay.
     scopes: dict[str, tuple[bool, bool]] = {}
     for name, plan in plans.items():
         if isinstance(plan, PathPlan):
@@ -98,8 +116,10 @@ def main(
                 parts.append(plan.deferred)
         else:
             parts = [plan.soft] if plan.soft is not None else []
-        scopes[name] = (all(crisp_binary_safe(p) for p in parts),
-                        all(crisp_differential_safe(p) for p in parts))
+        scopes[name] = (
+            all(crisp_binary_safe(p) for p in parts),
+            all(crisp_differential_safe(p, alpha=alphas[name],
+                                        tnorm=plan.score_tnorm) for p in parts))
         log.info("  %s: checks binary=%s differential=%s", name, *scopes[name])
 
     rq1._GRAPH, rq1._LIBS = graph, libs
@@ -108,15 +128,16 @@ def main(
     log.info("[3/4] replaying holdout: crisp pruned, fuzzy exact floor")
     for name, plan in plans.items():
         rq1._PLAN = plan
+        alpha = alphas[name]
         # Crisp arm, pruned from emit: every crisp-1 witness completes
         # (all its leaves read 1 along the way).
-        rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+        rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, True, alpha, None
         cr_top, cr_found, cr_exps, cr_tr = rq1._replay(hold_pos, workers, f"{name} crisp")
         # Fuzzy arm, branch-and-bound from ~0: exact best witness
         # (mod 1e-12) without unpruned search, which truncates and
         # LOSES positives (review #14.1). Groups ignore prune/floor
         # and are exact by construction.
-        rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+        rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, False, 0.0, EXACT_FLOOR
         fz_top, fz_found, fz_exps, fz_tr = rq1._replay(hold_pos, workers, f"{name} fuzzy")
         arms = {"fuzzy": {"top": fz_top, "found": fz_found},
                 "crisp": {"top": cr_top, "found": cr_found}}
@@ -125,7 +146,9 @@ def main(
                 ("fuzzy", fz_top, fz_found, fz_exps, fz_tr),
                 ("crisp", cr_top, cr_found, cr_exps, cr_tr)):
             summary_rows.append({
-                "motif": name, "arm": arm, "anchors": len(top),
+                "motif": name, "arm": arm,
+                "alpha": alpha if arm == "crisp" else None,
+                "anchors": len(top),
                 "fires": int(found.sum()), "fires_per_day": float(found.sum()) / n_ho_days,
                 "nonzero": int((top > 0).sum()),
                 "nonzero_per_day": float((top > 0).sum()) / n_ho_days,
@@ -143,7 +166,9 @@ def main(
 
         # Crisp differential on anchors where both arms completed.
         # Truncation can still strike the two searches differently,
-        # so truncated anchors are reported, not asserted.
+        # so truncated anchors are reported, not asserted. At α=0 the
+        # rule is crisp>0 ⟺ fuzzy>0; at α>0 (min motifs) it is
+        # crisp=1 ⟺ fuzzy>=α — exact, since min selects (no rounding).
         binary_ok, diff_ok = scopes[name]
         if binary_ok:
             nonbinary = int(((cr_top > 0) & (cr_top < 1)).sum())
@@ -153,15 +178,16 @@ def main(
         else:
             log.info("  %s binary check: skipped (mean-grading quantifiers)", name)
         if diff_ok:
+            expect = (fz_top > 0) if alpha <= 0 else (fz_top >= alpha)
             both_ok = ~cr_tr & ~fz_tr
-            mismatch = int((((cr_top > 0) != (fz_top > 0)) & both_ok).sum())
-            trunc_mm = int((((cr_top > 0) != (fz_top > 0)) & ~both_ok).sum())
-            log.info("  %s differential: mismatch=%d (+%d on truncated)",
-                     name, mismatch, trunc_mm)
+            mismatch = int((((cr_top > 0) != expect) & both_ok).sum())
+            trunc_mm = int((((cr_top > 0) != expect) & ~both_ok).sum())
+            log.info("  %s differential (α=%g): mismatch=%d (+%d on truncated)",
+                     name, alpha, mismatch, trunc_mm)
             if mismatch:
                 raise SystemExit(f"crisp differential failed for {name}: {mismatch}")
         else:
-            log.info("  %s differential: skipped (not/mean-grading present)", name)
+            log.info("  %s differential: skipped (not/mean-grading/product present)", name)
 
         if 0 < verify_prune <= len(hold_pos):
             # Seeded spread sample (review #14.5): the old head slice
@@ -170,9 +196,9 @@ def main(
                 len(hold_pos), size=verify_prune, replace=False))
             sub = hold_pos[vs]
             if isinstance(plan, PathPlan):
-                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, True, None
+                rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, True, alpha, None
                 cr_sub, _, _, _ = rq1._replay(sub, min(workers, 4), f"{name} verify-cp")
-                rq1._PRUNE, rq1._CRISP, rq1._FLOOR = False, True, None
+                rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = False, True, alpha, None
                 cu_sub, _, _, cu_tr = rq1._replay(sub, min(workers, 4), f"{name} verify-cu")
                 # Pruning only skips zero-leaf branches and truncates
                 # less (subset of expansions), so pruned ⊇ unpruned:
@@ -189,7 +215,7 @@ def main(
                 log.info("  %s verify: prune check skipped (groups never prune)", name)
             # Determinism pin: same computation, different pool
             # sharding, must agree exactly.
-            rq1._PRUNE, rq1._CRISP, rq1._FLOOR = True, False, EXACT_FLOOR
+            rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, False, 0.0, EXACT_FLOOR
             fz_sub, _, _, _ = rq1._replay(sub, min(workers, 4), f"{name} verify-fz")
             if not np.array_equal(fz_sub, fz_top[vs]):
                 raise SystemExit(f"fuzzy rerun not deterministic for {name}")
@@ -215,24 +241,46 @@ def main(
                  .join(labels_one, on="transfer_id", how="left", maintain_order="left"))
     tr_rows, inst_rows = [], []
     for name in motifs_wanted:
-        for arm in ("fuzzy", "crisp"):
-            hold = evaluate.rank_per_day(
-                hold_base.with_columns(pl.Series("score", scored[name][arm]["top"])))
-            tr_rows.append(
-                evaluate.transfer_recall(hold, budget_list)
-                .with_columns(pl.lit(name).alias("motif"), pl.lit(arm).alias("arm"),
-                              pl.lit("transfer").alias("granularity")))
-            inst_rows.append(
-                evaluate.instance_recall(hold, memb, inst, budget_list)
-                .with_columns(pl.lit(name).alias("motif"), pl.lit(arm).alias("arm")))
+        # Fuzzy ranks once (graded scores, few ties); the binary exact
+        # arm ranks under each requested label-blind tie-break.
+        arm_orders = {"fuzzy": ["hash"],
+                      "crisp": orders}
+        for arm, arm_order_list in arm_orders.items():
+            for order in arm_order_list:
+                if order == "hash":
+                    hold = evaluate.rank_per_day(
+                        hold_base.with_columns(
+                            pl.Series("score", scored[name][arm]["top"])))
+                elif order == "amount_desc":
+                    hold = evaluate.rank_per_day(
+                        hold_base.with_columns(
+                            pl.Series("score", scored[name][arm]["top"])),
+                        secondary_col="amount_usd")
+                else:
+                    hold = evaluate.rank_per_day(
+                        hold_base.with_columns(
+                            pl.Series("score", scored[name][arm]["top"])),
+                        secondary_col="amount_usd", secondary_desc=False)
+                alpha = alphas[name] if arm == "crisp" else None
+                tr_rows.append(
+                    evaluate.transfer_recall(hold, budget_list)
+                    .with_columns(pl.lit(name).alias("motif"), pl.lit(arm).alias("arm"),
+                                  pl.lit(order).alias("order"),
+                                  pl.lit(alpha, dtype=pl.Float64).alias("alpha"),
+                                  pl.lit("transfer").alias("granularity")))
+                inst_rows.append(
+                    evaluate.instance_recall(hold, memb, inst, budget_list)
+                    .with_columns(pl.lit(name).alias("motif"), pl.lit(arm).alias("arm"),
+                                  pl.lit(order).alias("order"),
+                                  pl.lit(alpha, dtype=pl.Float64).alias("alpha")))
     pl.concat(tr_rows).write_csv(out / "rq2_recall_transfer.csv")
     pl.concat(inst_rows).write_csv(out / "rq2_recall_instance.csv")
 
     log.info("RQ2 table (holdout instance recall, completable set)")
     inst_all = pl.concat(inst_rows).filter(pl.col("set") == "completable")
-    for row in inst_all.sort(["motif", "arm", "budget", "group"]).iter_rows(named=True):
-        log.info("  %-14s %-5s budget %5d %-8s recall %.3f (%d/%d)",
-                 row["motif"], row["arm"], row["budget"], row["group"],
+    for row in inst_all.sort(["motif", "arm", "order", "budget", "group"]).iter_rows(named=True):
+        log.info("  %-14s %-5s %-11s budget %5d %-8s recall %.3f (%d/%d)",
+                 row["motif"], row["arm"], row["order"], row["budget"], row["group"],
                  row["recall"] or 0.0, row["n_hit"], row["n_total"])
     log.info("done")
 

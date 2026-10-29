@@ -10,13 +10,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from motifql import checks  # noqa: E402
 from motifql.parser import parse_text  # noqa: E402
-from motifql.planner import PlanError, compile_motif, estimate_cost  # noqa: E402
+from motifql.planner import PlanError, compile_motif  # noqa: E402
 
 HEADER = "term soon = trapezoid(0h, 0h, 6h, 48h)\n"
 
@@ -181,12 +180,15 @@ def test_round_trip_plan() -> None:
     ]
     assert plan.deferred is None
     assert plan.score_tnorm == "min" and plan.emit == 0.5
-    assert plan.est_expansions == -1.0  # no stats: unwired
 
 
 def test_layering_chain_plan_is_open() -> None:
     plan = compile_motif(_doc(), "layering_chain")
-    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 8)
+    # G (#15): open chains without deferred soft search to min hops, so
+    # the plan carries the effective (5, 5) bound, not the written *5..8.
+    # Scores and witnesses are unchanged (see test_scores.py); the
+    # rewrite only drops branches that can never win.
+    assert not plan.closed and (plan.min_hops, plan.max_hops) == (5, 5)
     assert len(plan.prunable) == 2
 
 
@@ -360,13 +362,16 @@ def test_mixed_unit_arithmetic_rejected() -> None:
         " soft each e: e.amount + e.gap is soon }")
 
 
-def test_cost_budget_rejects_huge_hops() -> None:
-    dense = np.zeros(30)
-    dense[20] = 100.0  # mean in-degree 10: *2..5 estimates ~1e5, passes
-    plan = compile_motif(_doc(), "round_trip", stats=dense)
-    assert plan.est_expansions < 10_000_000
-    huge = np.zeros(200)
-    huge[100] = 100.0  # mean in-degree 50: *2..5 estimates ~3e8
-    with pytest.raises(PlanError) as exc:
-        compile_motif(_doc(), "round_trip", stats=huge)
-    assert "E_COST" in str(exc.value)
+def test_no_static_cost_gate() -> None:
+    # #15 #5: mean-degree expansion estimates were wrong by orders of
+    # magnitude and refused feasible motifs, so E_COST is deleted. A
+    # deliberately deep motif (*2..8 closed, old estimate ~1e8 on any
+    # dense graph) compiles; runtime caps bound the search instead.
+    doc = parse_text(
+        HEADER
+        + "motif t { match (a:account) -[e:transfer*2..8]-> (a)"
+        + " where e is time_ordered and span(e) <= 30d"
+        + " soft each e: e.gap is soon"
+        + " score min emit when score >= 0.5 }")
+    plan = compile_motif(doc, "t")
+    assert plan.closed and (plan.min_hops, plan.max_hops) == (2, 8)
