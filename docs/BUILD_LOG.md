@@ -257,3 +257,33 @@ Claude review of the RQ2 writeup, all verified and addressed:
   crisp negation unified + deferred/group coverage tests (incl. a
   mutation check); per-tid noise; seeded spread verify slice;
   transcript kept on failure. 142/142 pass.
+
+## Nov 2 stage — streaming ingest, proxy, RQ3
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `src/motifql/graph.py`: streaming `append` (over-allocated attrs,
+  per-node overflow merged oldest-first, auto/explicit `rebuild` with
+  stable node ids, `empty()` for live-only use).
+- `src/motifql/engine.py`: compile-once `Engine`, thread-safe
+  `score(transfer)` with witness/explanation serialization,
+  batch `replay` sharing `score_any` (live/batch parity by
+  construction).
+- `src/motifql/proxy.py` + `server.py`: FastAPI `POST /score`,
+  `POST /evaluate` (injects `event_data.motifs = {name: top_score}`,
+  forwards to stock ezrules upstream, 502-with-scores when down),
+  `GET /healthz`, typer CLI; stub-tested, no live ezrules yet.
+- `eval/rq3.py`: serial holdout latency per motif (pruned,
+  exact-floor, unpruned sub-sample) + SQLite bounded-BFS proxy
+  baseline; `eval/results/rq3_latency.csv`.
+- `docs/2026-11-06-proxy-rq3.md`: RQ3 table. Live clears by ~15×
+  over the peak minute (~245 all-motif transfers/sec single-core vs
+  16.6/s busiest minute; ~32× over the peak-day average);
+  exact-floor agrees with unpruned at 1.0000 while unpruned runs
+  25–160× slower and truncates.
+- 18 tests (`test_streaming/engine/server`); full suite green.
+- Rebased onto #19 (numba fast paths) per its PR note: overflow
+  guard in `csr_ordered` (live scores run the Python reference until
+  `rebuild()`), `_STRUCTURE` tracks the backing arrays, 2 more
+  fast-vs-Python append tests; RQ3 re-run (replay ~11.9k/s,
+  outputs identical).
