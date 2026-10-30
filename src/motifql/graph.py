@@ -29,10 +29,11 @@ Layout
   strictly increasing position order (so position order is (time,
   position) order), each segment holding only its node's edges, node ids
   in range, and ``out_times`` / ``in_times`` equal to ``times`` at those
-  positions. ``from_transfers`` always produces it; when it is False the
-  fast paths run the pure-Python reference. It is checked at
-  construction and again on first use after ``times``, ``frm``, ``to``,
-  ``nodes`` or any CSR array is rebound.
+  positions. It is also False while appended transfers sit in the
+  overflow (the kernels cannot see them). ``from_transfers`` always
+  produces it; when it is False the fast paths run the pure-Python
+  reference. It is checked at construction and again on first use after
+  a backing or CSR array is rebound (``_STRUCTURE``).
 
 The arrays are ordinary writable numpy arrays and the graph keeps no
 other copy of them. ``amount`` can be edited in place: every reader,
@@ -181,7 +182,15 @@ class TemporalGraph:
 
     @property
     def csr_ordered(self) -> bool:
-        """The CSR invariant (module docstring) for the current arrays."""
+        """The CSR invariant (module docstring) for the current arrays.
+
+        False while any appended transfer is still in the overflow: the
+        compiled kernels read CSR segments only, so running them would
+        silently miss the newest edges (wrong, not just slower). The
+        pure-Python reference runs instead until `rebuild()`.
+        """
+        if self._appended or self._csr_nodes < len(self.nodes):
+            return False
         if self._csr_ok is None:
             self._csr_ok = _csr_ordered(self)
         return self._csr_ok
@@ -504,9 +513,13 @@ class TemporalGraph:
 _EMPTY_U32 = np.empty(0, dtype=np.uint32)
 _EMPTY_I64 = np.empty(0, dtype=np.int64)
 
-# Attributes the CSR ordering check reads; rebinding one re-runs it.
-_STRUCTURE = frozenset(("times", "frm", "to", "nodes", "out_ptr", "out_edges",
-                        "out_times", "in_ptr", "in_edges", "in_times"))
+# Backing arrays the CSR ordering check reads through; rebinding one
+# re-runs it. `times`/`frm`/`to` are read-only properties over the
+# underscore arrays (which `_grow` rebinds), so the properties
+# themselves are not listed: they cannot be rebound.
+_STRUCTURE = frozenset(("_times", "_frm", "_to", "_amount", "_transfer_id",
+                        "nodes", "out_ptr", "out_edges", "out_times",
+                        "in_ptr", "in_edges", "in_times"))
 
 
 def _csr_ordered(graph: TemporalGraph) -> bool:

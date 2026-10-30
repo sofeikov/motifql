@@ -281,3 +281,8 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   exact-floor agrees with unpruned at 1.0000 while unpruned runs
   25–160× slower and truncates.
 - 18 tests (`test_streaming/engine/server`); full suite green.
+- Rebased onto #19 (numba fast paths) per its PR note: overflow
+  guard in `csr_ordered` (live scores run the Python reference until
+  `rebuild()`), `_STRUCTURE` tracks the backing arrays, 2 more
+  fast-vs-Python append tests; RQ3 re-run (replay ~11.9k/s,
+  outputs identical).

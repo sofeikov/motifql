@@ -20,6 +20,9 @@ from motifql.graph import TemporalGraph, SECS_PER_DAY  # noqa: E402
 from motifql.groups import score_any  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import compile_motif  # noqa: E402
+import motifql.groups as _G  # noqa: E402
+import motifql.groups_fast as _GF  # noqa: E402
+import motifql.matcher as _M  # noqa: E402
 
 BASE = datetime(2022, 9, 3)
 MOTIFS = Path(__file__).resolve().parent.parent / "examples" / "amlworld.motif"
@@ -198,6 +201,101 @@ def test_out_of_order_append_still_merges() -> None:
     edges, times = g.incoming(b, t_hi + 60, 7 * SECS_PER_DAY)
     assert edges.tolist() == [0, 2, 1]
     assert times.tolist() == sorted(times.tolist())
+
+
+def _python_results(graph, plan, libs, anchors):
+    """score_any with the compiled kernels forced off (restores flags)."""
+    old_m, old_g = _M.PURE_PYTHON, _G.PURE_PYTHON
+    _M.PURE_PYTHON = _G.PURE_PYTHON = True
+    try:
+        return [score_any(graph, a, plan, libs) for a in anchors]
+    finally:
+        _M.PURE_PYTHON, _G.PURE_PYTHON = old_m, old_g
+
+
+def _assert_same_results(fast, python, label: str) -> None:
+    assert len(fast) == len(python)
+    for i, (r_fast, r_py) in enumerate(zip(fast, python)):
+        assert (r_fast.found, r_fast.truncated) == (r_py.found, r_py.truncated), (label, i)
+        assert r_fast.score == r_py.score, (label, i)
+        assert r_fast.top_score == r_py.top_score, (label, i)
+        assert r_fast.witness == r_py.witness, (label, i)
+        assert r_fast.degrees == r_py.degrees, (label, i)
+        assert r_fast.expansions == r_py.expansions, (label, i)
+
+
+def test_fast_python_parity_with_overflow() -> None:
+    # The compiled kernels read CSR segments only, so any pending overflow
+    # must close the fast path (silently missing edges is wrong, not slow).
+    # The gate assertions run while the overflow touches existing nodes
+    # only: the CSR check alone would pass there, so only the guard can
+    # close the gate.
+    rng = np.random.default_rng(31)
+    accts = [f"A{i:02d}" for i in range(10)]
+    df = _frame(_random_rows(rng, 150, accts))
+    live = TemporalGraph.from_transfers(df.head(100))
+    for row in df.slice(100).iter_rows(named=True):
+        _append_row(live, row)
+    doc = parse_file(MOTIFS)
+    libs = libs_from_doc(doc)
+    assert live._appended == 50 and live._csr_nodes == len(live.nodes)
+    assert live.csr_ordered is False
+    assert _M._graph_ok(live) is False
+    assert _GF.csr_time_ordered(live) is False
+    anchors = list(range(live.n_edges))
+    for name in ("round_trip", "fan_out", "scatter_gather"):
+        plan = compile_motif(doc, name)
+        fast = [score_any(live, a, plan, libs) for a in anchors]
+        _assert_same_results(fast, _python_results(live, plan, libs, anchors),
+                             f"{name} pre-rebuild")
+    # New-node edge plus an out-of-order edge between existing nodes, so
+    # older anchors' windows include an appended edge too; agreement must
+    # hold before and after the rebuild drains them.
+    t_new = int(live.times[-1]) + 3600
+    t_old = int(live.times[50])
+    live.append(t_new, "001", "ZZ1", "001", "ZZ2", 500.0, 1000)
+    live.append(t_old, "001", accts[0], "001", accts[1], 700.0, 1001)
+    anchors = list(range(live.n_edges))
+    for name in ("round_trip", "fan_out", "scatter_gather"):
+        plan = compile_motif(doc, name)
+        fast = [score_any(live, a, plan, libs) for a in anchors]
+        _assert_same_results(fast, _python_results(live, plan, libs, anchors),
+                             f"{name} mixed-overflow")
+    live.rebuild()
+    # The out-of-order edge keeps global time order broken, so this graph
+    # conservatively stays on the reference — results still agree.
+    assert live.csr_ordered is False
+    for name in ("round_trip", "fan_out", "scatter_gather"):
+        plan = compile_motif(doc, name)
+        fast = [score_any(live, a, plan, libs) for a in anchors]
+        _assert_same_results(fast, _python_results(live, plan, libs, anchors),
+                             f"{name} post-rebuild")
+
+
+def test_fast_path_reengages_after_in_order_rebuild() -> None:
+    # In-order appends keep every invariant; rebuild() reopens the fast
+    # path, and its outputs (expansions included) match the reference.
+    rng = np.random.default_rng(33)
+    accts = [f"A{i:02d}" for i in range(10)]
+    df = _frame(_random_rows(rng, 150, accts))
+    live = TemporalGraph.from_transfers(df.head(100))
+    for row in df.slice(100).iter_rows(named=True):
+        _append_row(live, row)
+    t_new = int(live.times[-1]) + 3600
+    live.append(t_new, "001", "ZZ1", "001", "ZZ2", 500.0, 1000)
+    assert live.csr_ordered is False  # overflow pending, even fully ordered
+    live.rebuild()
+    assert live.csr_ordered is True
+    assert _M._graph_ok(live) is True
+    assert _GF.csr_time_ordered(live) is True
+    anchors = list(range(live.n_edges))
+    doc = parse_file(MOTIFS)
+    libs = libs_from_doc(doc)
+    for name in ("round_trip", "fan_out", "scatter_gather"):
+        plan = compile_motif(doc, name)
+        fast = [score_any(live, a, plan, libs) for a in anchors]
+        _assert_same_results(fast, _python_results(live, plan, libs, anchors),
+                             f"{name} rebuilt")
 
 
 def test_score_parity_live_vs_batch() -> None:

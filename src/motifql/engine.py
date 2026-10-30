@@ -101,7 +101,9 @@ class Engine:
 
         ``transfer`` holds the prep-schema fields (``timestamp`` as epoch
         seconds, ISO-8601 or datetime; ``transfer_id`` optional). Returns
-        one result per motif in file order.
+        one result per motif in file order. Runs the pure-Python
+        reference while the append sits in the overflow (the compiled
+        kernels read CSR segments only); ``rebuild()`` reopens them.
         """
         missing = [f for f in REQUIRED_FIELDS if f not in transfer]
         if missing:

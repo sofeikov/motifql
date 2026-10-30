@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.groups import score_any  # noqa: E402
+from motifql.groups import score_any, warm_up  # noqa: E402
 from motifql.matcher import EXACT_FLOOR  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import PathPlan, compile_motif  # noqa: E402
@@ -171,6 +171,11 @@ def main(
     log.info("[3/4] serial latency per motif (pruned + exact-floor arms)")
     rows: list[dict] = []
     for name, plan in plans.items():
+        # Load compiled kernels before timing (one-time ~1s per process).
+        warm_up(plan, libs)
+        if isinstance(plan, PathPlan):
+            warm_up(plan, libs, floor=EXACT_FLOOR)
+            warm_up(plan, libs, prune=False)
         s, _ = _run_arm(graph, positions, plan, libs, f"{name} pruned")
         rows.append({"motif": name, "arm": "pruned", **s})
         if isinstance(plan, PathPlan):
