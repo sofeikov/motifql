@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import evaluate, splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.groups import score_any  # noqa: E402
+from motifql.groups import score_batch, warm_up  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import compile_motif  # noqa: E402
 
@@ -65,23 +65,15 @@ def _score_job(args: tuple[npt.NDArray[np.int64], bool]
     """Score one anchor shard; positions first so results realign."""
     positions, _ = args
     assert _GRAPH is not None and _PLAN is not None and _LIBS is not None
-    n = len(positions)
-    top = np.empty(n, dtype=np.float64)
-    found = np.empty(n, dtype=bool)
-    exps = np.empty(n, dtype=np.float64)
-    trunc = np.empty(n, dtype=bool)
-    for i, pos in enumerate(positions.tolist()):
-        # Unpruned: RQ1 ranks by the best witness even below emit, and
-        # pruning zeroes every sub-emit top_score. (RQ2 sets the
-        # globals for its arms, including floor=EXACT_FLOOR for the
-        # fuzzy arm; RQ1 defaults are unchanged.)
-        res = score_any(_GRAPH, int(pos), _PLAN, _LIBS,
-                        prune=_PRUNE, crisp=_CRISP, crisp_alpha=_CALPHA,
-                        floor=_FLOOR)
-        top[i] = res.top_score
-        found[i] = res.found
-        exps[i] = res.expansions
-        trunc[i] = res.truncated
+    # Unpruned: RQ1 ranks by the best witness even below emit, and
+    # pruning zeroes every sub-emit top_score. (RQ2 sets the globals for
+    # its arms, including floor=EXACT_FLOOR for the fuzzy arm; RQ1
+    # defaults are unchanged.) score_batch equals a score_any loop over
+    # the shard and runs serially in this process (no numba threads, so
+    # the fork Pool stays safe).
+    top, found, exps, trunc = score_batch(
+        _GRAPH, positions, _PLAN, _LIBS, prune=_PRUNE, crisp=_CRISP,
+        crisp_alpha=_CALPHA, floor=_FLOOR)
     return positions, top, found, exps, trunc
 
 
@@ -92,6 +84,11 @@ def _replay(positions: npt.NDArray[np.int64], workers: int,
     if workers <= 1:
         _, *out = _score_job((positions, True))
     else:
+        # Load the compiled kernels once, before the fork (on a synthetic
+        # graph: no side effects here), so every forked worker inherits
+        # them instead of loading them again (~0.6 s each).
+        warm_up(_PLAN, _LIBS, prune=_PRUNE, crisp=_CRISP,
+                crisp_alpha=_CALPHA, floor=_FLOOR)
         n_shards = 8 * workers
         shards = [positions[i::n_shards] for i in range(n_shards)]
         shards = [s for s in shards if len(s)]
@@ -217,6 +214,9 @@ def main(
     hold_base = (df.filter(pl.col("day").is_between(ho0, ho1))
                  .head(len(hold_pos))
                  .join(labels_one, on="transfer_id", how="left", maintain_order="left"))
+    # The tie-break hash depends only on transfer_id: compute it once here
+    # rather than once per motif (rank_per_day reuses the column).
+    hold_base = evaluate.with_tiebreak(hold_base)
     # Anchor order is the frame order filtered to holdout days; row positions
     # below index into the holdout replay arrays in that same order.
     tr_rows, inst_rows = [], []

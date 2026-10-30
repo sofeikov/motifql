@@ -196,6 +196,42 @@ and on which motifs.
   field, for example `if $motifs.round_trip > 0.8: return !HOLD`. ezrules'
   rule docs confirm `$` references accept dotted paths into nested JSON.
 
+### 6.7 Compiled fast paths
+The day-2 fallback in §6.2 happened: the hot loops run in Numba, and the
+pure-Python code stays as the reference.
+- **What is compiled.** `motifql._pathkernel` runs the anchored path walk
+  behind `match`, `find_all` and `score`. `motifql.groups_fast` builds the
+  members for fan, scatter, gather and butterfly. The having and soft
+  evaluators stay in Python and are shared with the reference.
+- **Batch API.** `groups.score_batch(graph, positions, plan, libs, ...)`
+  returns `(top_score, found, expansions, truncated)` arrays. It equals a
+  `score_any` loop over the same anchors in the same order, including the
+  lazy eviction floors it moves. The eval harnesses (`rq1._replay`, which
+  RQ2, perturb and discover reuse, and `score_replay`) call it once per
+  pool shard. It is serial: `score_path_batch(parallel=True)` starts Numba
+  threads, which are not fork-safe, so it is never used in a process that
+  forks a pool later.
+- **Reference switch.** `MOTIFQL_PURE_PYTHON=1`, or setting
+  `matcher.PURE_PYTHON` / `groups.PURE_PYTHON`, forces the pure-Python
+  code. Anything a kernel does not model also runs the reference: deferred
+  soft, odd `find_all` caps, a graph whose CSR order check fails.
+- **Parity.** The fast paths are bit-identical to the reference in every
+  field. `tests/test_pathkernel_parity.py` and `tests/test_groups_fast.py`
+  pin this on synthetic graphs. `eval/parity_check_path.py` and
+  `eval/parity_check_groups.py` check sampled and hub anchors on HI-Small.
+  Run them after any change to either side.
+- **No hidden caches.** Nothing is memoised between calls. A path plan's
+  atom table is compiled again on every `score` / batch call (about 5 µs),
+  so an edited term library is always seen. The kernels read the graph's
+  own arrays on every call, so in-place edits to `amount` are seen at
+  once. Their one graph-side precondition is
+  the `csr_ordered` flag, which is checked when the graph is built and
+  again on first use after `times`, `frm`, `to`, `nodes` or a CSR array is
+  rebound (rebuilding the CSR rebinds them). Edges kept outside the CSR,
+  such as a streaming overflow, are not read by the kernels: while any
+  exist, `matcher._graph_ok` and `groups_fast.csr_time_ordered` must
+  return False so the reference runs, until the kernels learn to read them.
+
 ## 7. Use of Meta models
 
 | Role | Model | Why that model |

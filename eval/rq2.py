@@ -239,6 +239,7 @@ def main(
     hold_base = (df.filter(pl.col("day").is_between(ho0, ho1))
                  .head(len(hold_pos))
                  .join(labels_one, on="transfer_id", how="left", maintain_order="left"))
+    hold_base = evaluate.with_tiebreak(hold_base)  # once, not per motif/arm/order
     tr_rows, inst_rows = [], []
     for name in motifs_wanted:
         # Fuzzy ranks once (graded scores, few ties); the binary exact

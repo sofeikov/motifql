@@ -20,6 +20,22 @@ Layout
   duplicate the timestamps in adjacency order so every window lookup is a
   plain ``numpy.searchsorted`` on a contiguous view (one extra int64 per
   edge per direction; revisited only if HI-Medium forces it).
+* ``csr_ordered`` says whether the CSR holds the invariant the compiled
+  fast paths rely on: ``times`` non-decreasing, every CSR segment in
+  strictly increasing position order (so position order is (time,
+  position) order), each segment holding only its node's edges, node ids
+  in range, and ``out_times`` / ``in_times`` equal to ``times`` at those
+  positions. ``from_transfers`` always produces it; when it is False the
+  fast paths run the pure-Python reference. It is checked at
+  construction and again on first use after ``times``, ``frm``, ``to``,
+  ``nodes`` or any CSR array is rebound.
+
+The arrays are ordinary writable numpy arrays and the graph keeps no
+other copy of them. ``amount`` can be edited in place: every reader,
+compiled or not, reads it directly. ``times``,
+the endpoints and the CSR are the structure (``out_times`` / ``in_times``
+already duplicate ``times``), so changing them means rebuilding the CSR,
+i.e. rebinding its arrays, which also re-runs the ordering check.
 
 Retention
 ---------
@@ -92,12 +108,27 @@ class TemporalGraph:
         self.in_ptr = in_ptr
         self.in_edges = in_edges
         self.in_times = in_times
+        # Checked now, in the building process, so forked workers inherit it.
+        self._csr_ok = _csr_ordered(self)
         self.retention_s = retention_s
         self.watermark = int(times[0]) if len(times) else 0
         # Lazy per-node eviction floors, rebased on first access past watermark.
         self._out_lo = np.zeros(len(nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
         self._floors_clean = True
+
+    def __setattr__(self, name: str, value) -> None:
+        object.__setattr__(self, name, value)
+        if name in _STRUCTURE:
+            # New structure: re-run the ordering check on next use.
+            object.__setattr__(self, "_csr_ok", None)
+
+    @property
+    def csr_ordered(self) -> bool:
+        """The CSR invariant (module docstring) for the current arrays."""
+        if self._csr_ok is None:
+            self._csr_ok = _csr_ordered(self)
+        return self._csr_ok
 
     # -- construction ----------------------------------------------------
 
@@ -285,6 +316,53 @@ class TemporalGraph:
 
 _EMPTY_U32 = np.empty(0, dtype=np.uint32)
 _EMPTY_I64 = np.empty(0, dtype=np.int64)
+
+# Attributes the CSR ordering check reads; rebinding one re-runs it.
+_STRUCTURE = frozenset(("times", "frm", "to", "nodes", "out_ptr", "out_edges",
+                        "out_times", "in_ptr", "in_edges", "in_times"))
+
+
+def _csr_ordered(graph: TemporalGraph) -> bool:
+    """The (time, position) CSR invariant (module docstring), vectorised.
+
+    Malformed CSR (bad pointers, out-of-range positions) also reads False:
+    the pure-Python reference then runs and fails or not exactly as before.
+    """
+    times = np.asarray(graph.times)
+    n_edges = len(times)
+    if n_edges > 1 and not bool(np.all(times[1:] >= times[:-1])):
+        return False
+    for end in (graph.frm, graph.to):
+        end = np.asarray(end)
+        if len(end) != n_edges or (n_edges and (int(end.min()) < 0
+                                                or int(end.max()) >= graph.n_nodes)):
+            return False  # unknown node ids: the reference returns empty slices
+    for ptr, edges, adj_t, endpoint in (
+            (graph.out_ptr, graph.out_edges, graph.out_times, graph.frm),
+            (graph.in_ptr, graph.in_edges, graph.in_times, graph.to)):
+        ptr = np.asarray(ptr)
+        e = np.asarray(edges).astype(np.int64)
+        if (len(ptr) != graph.n_nodes + 1 or int(ptr[0]) != 0 or int(ptr[-1]) != len(e)
+                or bool(np.any(np.diff(ptr) < 0)) or len(adj_t) != len(e)):
+            return False
+        if len(e) and (int(e.min()) < 0 or int(e.max()) >= n_edges):
+            return False
+        if not np.array_equal(np.asarray(adj_t), times[e]):
+            return False
+        # Segment membership: node v's segment holds only v's edges (the
+        # scatter kernel reads leg1s from mids' in-segments, not senders').
+        owner = np.repeat(np.arange(graph.n_nodes, dtype=np.int64), np.diff(ptr))
+        if not np.array_equal(np.asarray(endpoint)[e].astype(np.int64), owner):
+            return False
+        if len(e) < 2:
+            continue
+        inside = np.ones(len(e) - 1, dtype=bool)
+        starts = ptr[1:-1].astype(np.int64)
+        starts = starts[(starts > 0) & (starts < len(e))]
+        inside[starts - 1] = False  # pair (k-1, k) straddles a segment start
+        if not bool(np.all(np.diff(e)[inside] > 0)):
+            return False
+    return True
 
 
 def _csr(

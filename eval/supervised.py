@@ -140,6 +140,7 @@ def main(
                  .join(memb.join(inst.select(["instance_id", "pattern_type"]), on="instance_id")
                        .group_by("transfer_id").agg(pl.col("pattern_type").first()),
                        on="transfer_id", how="left", maintain_order="left"))
+    hold_base = evaluate.with_tiebreak(hold_base)  # once, not per model
     wide = hold_base.select("transfer_id", "timestamp", "day", "is_laundering", "pattern_type")
     log.info("[4/4] recall at fixed alerts/day budgets")
     for model, s in scores.items():
