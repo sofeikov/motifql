@@ -262,14 +262,65 @@ def test_fast_python_parity_with_overflow() -> None:
         _assert_same_results(fast, _python_results(live, plan, libs, anchors),
                              f"{name} mixed-overflow")
     live.rebuild()
-    # The out-of-order edge keeps global time order broken, so this graph
-    # conservatively stays on the reference — results still agree.
-    assert live.csr_ordered is False
+    # Rebuild sorts survivors into time order, so even the out-of-order
+    # edge lands in place and the fast path re-engages; results agree.
+    assert live.csr_ordered is True
+    assert _M._graph_ok(live) is True
+    assert _GF.csr_time_ordered(live) is True
+    anchors = list(range(live.n_edges))  # positions renumber on rebuild
     for name in ("round_trip", "fan_out", "scatter_gather"):
         plan = compile_motif(doc, name)
         fast = [score_any(live, a, plan, libs) for a in anchors]
         _assert_same_results(fast, _python_results(live, plan, libs, anchors),
                              f"{name} post-rebuild")
+
+
+def test_rebuild_compacts_expired_edges() -> None:
+    # Evicted edges are freed at rebuild (transfer_ids stable, positions
+    # renumbered); survivors answer exactly like a fresh graph built
+    # from the unexpired rows. Node ids stay put, so compare by key.
+    rng = np.random.default_rng(41)
+    accts = [f"A{i:02d}" for i in range(10)]
+    df = _frame(_random_rows(rng, 100, accts))
+    g = TemporalGraph.from_transfers(df)
+    cutoff = int(g.times[60])
+    g.evict_before(cutoff)
+    g.rebuild()
+    assert g.n_edges == 40
+    assert g.times.tolist() == sorted(g.times.tolist())
+    fresh = TemporalGraph.from_transfers(
+        df.filter(pl.col("timestamp") >= df["timestamp"][60]))
+    assert fresh.n_edges == 40
+    assert sorted(g.transfer_id.tolist()) == sorted(fresh.transfer_id.tolist())
+    for key in fresh.nodes:
+        bank, acct = key.split("/", 1)
+        a, b = g.node_id(bank, acct), fresh.node_id(bank, acct)
+        for before_t in (cutoff, int(g.times[-1]) + 60):
+            for w in (3600, 30 * SECS_PER_DAY):
+                for fn in ("incoming", "outgoing"):
+                    ge, _ = getattr(g, fn)(a, before_t, w)
+                    fe, _ = getattr(fresh, fn)(b, before_t, w)
+                    assert ({int(g.transfer_id[e]) for e in ge}
+                            == {int(fresh.transfer_id[e]) for e in fe})
+    gpos = {int(t): i for i, t in enumerate(g.transfer_id.tolist())}
+    fpos = {int(t): i for i, t in enumerate(fresh.transfer_id.tolist())}
+    doc = parse_file(MOTIFS)
+    libs = libs_from_doc(doc)
+    for name in ("round_trip", "fan_out"):
+        plan = compile_motif(doc, name)
+        for tid in gpos:
+            r = score_any(g, gpos[tid], plan, libs)
+            s = score_any(fresh, fpos[tid], plan, libs)
+            assert (r.found, r.score, r.top_score) == (s.found, s.score, s.top_score)
+            assert ([int(g.transfer_id[e]) for e in r.witness]
+                    == [int(fresh.transfer_id[e]) for e in s.witness])
+    # Evicting everything rebuilds to an empty graph that still appends.
+    g.evict_before(int(g.times[-1]) + 1)
+    g.rebuild()
+    assert g.n_edges == 0
+    assert g.incoming(0, 2**40, SECS_PER_DAY)[0].tolist() == []
+    t = _epoch(BASE + timedelta(minutes=10_000))
+    assert g.append(t, "001", "A", "001", "B", 5.0, 999) == 0
 
 
 def test_fast_path_reengages_after_in_order_rebuild() -> None:

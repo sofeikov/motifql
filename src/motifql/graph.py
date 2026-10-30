@@ -49,10 +49,12 @@ amortized): attributes go into the spare capacity, and the edge joins
 per-node overflow lists that ``incoming``/``outgoing`` merge with the
 frozen CSR segments. The CSR is rebuilt (amortized over
 ``rebuild_threshold`` appends) once the overflow grows past the
-threshold, or on an explicit ``rebuild()`` call. Node ids are stable
-across rebuilds. Appends are expected in non-decreasing timestamp order
-(live streams satisfy this); out-of-order appends still merge correctly
-but cost an insertion sort step per edge.
+threshold, or on an explicit ``rebuild()`` call. Node ids and
+transfer_ids are stable across rebuilds; positions are not. Appends
+are expected in non-decreasing timestamp order (live streams satisfy
+this); out-of-order appends still merge correctly but cost an
+insertion sort step per edge, and the next rebuild sorts them into
+their time order.
 
 Retention
 ---------
@@ -90,8 +92,8 @@ import polars as pl
 log = logging.getLogger("graph")
 
 SECS_PER_DAY = 86_400
-# Longest v0 window (round_trip 7d) plus a margin; CLI default derives from this.
-DEFAULT_RETENTION_DAYS = 8
+# Longest v0 window (layering_chain 10d) plus a margin.
+DEFAULT_RETENTION_DAYS = 11
 
 
 class TemporalGraph:
@@ -305,7 +307,9 @@ class TemporalGraph:
 
         O(1) amortized: attributes go into spare capacity, adjacency into
         the per-node overflow. Rebuilds the CSR once ``rebuild_threshold``
-        appends accumulate since the last rebuild.
+        appends accumulate since the last rebuild; a rebuild renumbers
+        positions (transfer_ids stay put), so use the returned position
+        promptly.
         """
         if self._n_edges >= 2**32:
             raise ValueError("edge count exceeds uint32 adjacency")
@@ -344,17 +348,32 @@ class TemporalGraph:
             setattr(self, attr, grown)
 
     def rebuild(self) -> None:
-        """Rebuild the CSR over every live edge; clear the overflow.
+        """Compact, sort and re-index every live edge; clear the overflow.
 
-        Node ids are stable (the nodes list keeps its order, so appended
-        nodes keep their ids and only gain CSR segments).
+        Drops edges older than the watermark (the retention promise:
+        evicted edges are freed here), sorts survivors by (time,
+        position) so every CSR segment is time-ordered even after
+        out-of-order appends, and renumbers positions 0..m-1. Node ids
+        and transfer_ids are stable; edge positions are not — nothing
+        may hold a position across a rebuild (the engine converts to
+        transfer_ids synchronously under its lock). Floors reset to
+        zero/clean, which is exact: no expired edge survives.
         """
         n = self._n_edges
-        times = self._times[:n]
+        t = self._times[:n]
+        keep = np.flatnonzero(t >= self.watermark)
+        # Stable: time-ordered input keeps its positions bit for bit.
+        order = keep[np.argsort(t[keep], kind="stable")]
+        m = len(order)
+        for attr in ("_times", "_frm", "_to", "_amount", "_transfer_id"):
+            a = getattr(self, attr)
+            a[:m] = a[order]  # RHS is a fancy-index copy: safe in place
+        self._n_edges = m
+        times = self._times[:m]
         self.out_ptr, self.out_edges, self.out_times = _csr(
-            self._frm[:n], times, len(self.nodes))
+            self._frm[:m], times, len(self.nodes))
         self.in_ptr, self.in_edges, self.in_times = _csr(
-            self._to[:n], times, len(self.nodes))
+            self._to[:m], times, len(self.nodes))
         self._out_lo = np.zeros(len(self.nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(self.nodes), dtype=np.int64)
         self._floors_clean = True

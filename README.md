@@ -171,7 +171,7 @@ The review history is public:
 | Evaluation harness, baselines, fuzzy vs exact | |
 | Muse Spark compiler with repair loop | |
 | Streaming ingest, live engine, ezrules proxy (stub-tested) | |
-| RQ3 latency benchmarks (live clears by 30×) | |
+| RQ3 latency benchmarks (~15× live headroom over peak minute) | |
 
 ## Reproduce
 

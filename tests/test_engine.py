@@ -109,6 +109,53 @@ def test_timestamp_forms_and_tid_assignment() -> None:
     assert eng.graph.transfer_id.tolist()[-2:] == [100, 101]
 
 
+def test_live_top_score_not_emit_gated() -> None:
+    # Rules cut on the injected top_score, so path motifs must report
+    # sub-emit scores live (default pruning gates them at emit).
+    eng = Engine.from_motif_file(MOTIFS)
+    hops = [(1000, 1000.0), (2000, 850.0), (3000, 850.0)]
+    accts = [("A", "B"), ("B", "C"), ("C", "A")]
+    out = None
+    for (t, amt), (a, b) in zip(hops, accts):
+        out = eng.score({"timestamp": t, "from_bank": "001",
+                         "from_account": a, "to_bank": "001",
+                         "to_account": b, "amount_usd": amt})
+    rt = next(r for r in out if r.motif == "round_trip")
+    assert rt.found is False
+    assert 0.0 < rt.top_score < 0.5
+    assert abs(rt.top_score - 0.25) < 1e-9
+    assert rt.witness == []  # below-emit paths keep no witness
+
+
+def test_aware_timestamps_normalize_to_utc() -> None:
+    from datetime import timezone
+
+    eng = Engine.from_motif_file(MOTIFS)
+    base = {"from_bank": "001", "from_account": "A",
+            "to_bank": "001", "to_account": "B", "amount_usd": 10.0}
+    eng.score({**base, "timestamp": "2022-09-07T10:00:00+02:00"})
+    eng.score({**base, "timestamp": datetime(2022, 9, 7, 10, 0,
+                                             tzinfo=timezone.utc)})
+    # 10:00+02:00 is 08:00Z; the aware datetime is 10:00Z.
+    assert eng.graph.times.tolist() == [1662537600, 1662544800]
+
+
+def test_retention_applies_live() -> None:
+    eng = Engine.from_motif_file(MOTIFS)
+    # Covers the longest motif window (layering_chain 10d) plus a margin.
+    assert eng.graph.retention_s == 11 * 86400
+    base = {"from_bank": "001", "from_account": "A",
+            "to_bank": "001", "to_account": "B", "amount_usd": 10.0}
+    t0 = 1662508800  # Sep 7 00:00Z
+    eng.score({**base, "timestamp": t0})
+    assert eng.graph.watermark == t0 - 11 * 86400
+    eng.score({**base, "timestamp": t0 + 86400})
+    assert eng.graph.watermark == t0 + 86400 - 11 * 86400
+    # Backfilled older rows never move the watermark backwards.
+    eng.score({**base, "timestamp": t0})
+    assert eng.graph.watermark == t0 + 86400 - 11 * 86400
+
+
 def test_bad_transfers_rejected() -> None:
     eng = Engine.from_motif_file(MOTIFS)
     with pytest.raises(ValueError, match="required fields"):

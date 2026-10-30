@@ -9,16 +9,18 @@ by construction.
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
 
 from motifql.degrees import libs_from_doc
-from motifql.graph import TemporalGraph
+from motifql.graph import SECS_PER_DAY, TemporalGraph
 from motifql.groups import score_any
+from motifql.matcher import EXACT_FLOOR
 from motifql.parser import parse_file, parse_text
 
 REQUIRED_FIELDS = ("timestamp", "from_bank", "from_account",
@@ -55,6 +57,8 @@ def _epoch(ts: int | float | str | datetime) -> int:
     if isinstance(ts, (int, float)):
         return int(ts)
     if isinstance(ts, datetime):
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(timezone.utc)
         return int((ts.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds())
     if isinstance(ts, str):
         return _epoch(datetime.fromisoformat(ts.replace("Z", "+00:00")))
@@ -77,10 +81,15 @@ class Engine:
             transfers = pl.read_parquet(Path(transfers) / "transfers.parquet"
                                         if Path(transfers).is_dir()
                                         else transfers)
+        # Retention must cover the longest motif window (plus a margin),
+        # or advancing the watermark would eat witnesses.
+        need_days = max([retention_days]
+                        + [math.ceil(p.window_s / SECS_PER_DAY) + 1
+                           for _, p in self._plans])
         self.graph = (TemporalGraph.from_transfers(
-            transfers, retention_days=retention_days)
+            transfers, retention_days=need_days)
             if transfers is not None
-            else TemporalGraph.empty(retention_days=retention_days))
+            else TemporalGraph.empty(retention_days=need_days))
         tids = self.graph.transfer_id
         self._next_tid = int(tids.max()) + 1 if len(tids) else 0
         self._lock = threading.Lock()
@@ -125,10 +134,16 @@ class Engine:
                 t, str(transfer["from_bank"]), str(transfer["from_account"]),
                 str(transfer["to_bank"]), str(transfer["to_account"]),
                 amount, tid)
+            # Retention applies as transfers arrive; backfilled older rows
+            # never move the watermark backwards. Rebuilds compact the
+            # evicted edges, so long-running servers hold ~retention only.
+            self.graph.evict_before(t - self.graph.retention_s)
             return [self._score_pos(pos, name, plan) for name, plan in self._plans]
 
     def _score_pos(self, pos: int, name: str, plan) -> MotifResult:
-        res = score_any(self.graph, pos, plan, self._libs)
+        # Exact floor: default pruning gates path top_scores at emit,
+        # which would hide sub-emit scores from downstream rules.
+        res = score_any(self.graph, pos, plan, self._libs, floor=EXACT_FLOOR)
         return MotifResult(
             motif=name, found=res.found, score=res.score,
             top_score=res.top_score,
@@ -155,7 +170,8 @@ class Engine:
         graph = TemporalGraph.from_transfers(df)
         cols: dict[str, list] = {"transfer_id": graph.transfer_id.tolist()}
         for name, plan in self._plans:
-            cols[name] = [score_any(graph, pos, plan, self._libs).top_score
+            cols[name] = [score_any(graph, pos, plan, self._libs,
+                                    floor=EXACT_FLOOR).top_score
                           for pos in range(graph.n_edges)]
         return pl.DataFrame(cols)
 

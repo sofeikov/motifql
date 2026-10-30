@@ -276,8 +276,9 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
 - `eval/rq3.py`: serial holdout latency per motif (pruned,
   exact-floor, unpruned sub-sample) + SQLite bounded-BFS proxy
   baseline; `eval/results/rq3_latency.csv`.
-- `docs/2026-11-06-proxy-rq3.md`: RQ3 table. Live clears by 30×
-  (~245 all-motif transfers/sec single-core vs ~8/sec peak);
+- `docs/2026-11-06-proxy-rq3.md`: RQ3 table. Live clears by ~15×
+  over the peak minute (~245 all-motif transfers/sec single-core vs
+  16.6/s busiest minute; ~32× over the peak-day average);
   exact-floor agrees with unpruned at 1.0000 while unpruned runs
   25–160× slower and truncates.
 - 18 tests (`test_streaming/engine/server`); full suite green.
