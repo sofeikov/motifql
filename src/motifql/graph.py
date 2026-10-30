@@ -27,13 +27,15 @@ Layout
 * ``csr_ordered`` records, once at construction, the invariant the
   compiled fast paths rely on: ``times`` non-decreasing, every CSR
   segment in strictly increasing position order (so position order is
-  (time, position) order) and ``out_times`` / ``in_times`` equal to
-  ``times`` at those positions. ``from_transfers`` always produces it;
+  (time, position) order), each segment holding only its node's edges,
+  node ids in range, and ``out_times`` / ``in_times`` equal to ``times``
+  at those positions. ``from_transfers`` always produces it;
   when it is False the fast paths run the pure-Python reference.
 
 Every array above, and the duplicates in particular, is fixed at
-construction: the arrays are made read-only and the attributes cannot be
-rebound, so no derived copy can go stale. Build a new graph to change the
+construction: the graph copies its inputs, makes the copies read-only
+(again after unpickling) and refuses to rebind them, so no derived copy
+can go stale. Build a new graph to change the
 data. Only the retention state below (watermark, lazy floors) mutates.
 
 Retention
@@ -94,6 +96,12 @@ class TemporalGraph:
         in_times: npt.NDArray[np.int64],
         retention_s: int,
     ) -> None:
+        # Private copies: freezing them below must not touch the caller's
+        # arrays, and no outside buffer or view can change them later.
+        times, frm, to, amount, transfer_id = (
+            _own(a) for a in (times, frm, to, amount, transfer_id))
+        out_ptr, out_edges, out_times, in_ptr, in_edges, in_times = (
+            _own(a) for a in (out_ptr, out_edges, out_times, in_ptr, in_edges, in_times))
         self.times = times
         self.frm = frm
         self.to = to
@@ -117,16 +125,24 @@ class TemporalGraph:
         self.in_frm = np.ascontiguousarray(np.asarray(frm)[idx])
         self.in_amount = np.ascontiguousarray(np.asarray(amount)[idx])
         self.csr_ordered = in_range and _csr_ordered(self)
-        for name in _FROZEN_ARRAYS:
-            arr = getattr(self, name)
-            if isinstance(arr, np.ndarray):
-                arr.flags.writeable = False
+        self._freeze()
         self.retention_s = retention_s
         self.watermark = int(times[0]) if len(times) else 0
         # Lazy per-node eviction floors, rebased on first access past watermark.
         self._out_lo = np.zeros(len(nodes), dtype=np.int64)
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
         self._floors_clean = True
+
+    def _freeze(self) -> None:
+        for name in _FROZEN_ARRAYS:
+            arr = getattr(self, name)
+            if isinstance(arr, np.ndarray):
+                arr.flags.writeable = False
+
+    def __setstate__(self, state: dict) -> None:
+        # Pickle and deepcopy restore arrays writable; re-freeze them.
+        self.__dict__.update(state)
+        self._freeze()
 
     def __setattr__(self, name: str, value) -> None:
         # Edge and CSR arrays (and the copies derived from them) are fixed
@@ -320,6 +336,10 @@ class TemporalGraph:
         }
 
 
+def _own(arr):
+    return np.array(arr) if isinstance(arr, np.ndarray) else arr
+
+
 _EMPTY_U32 = np.empty(0, dtype=np.uint32)
 _EMPTY_I64 = np.empty(0, dtype=np.int64)
 
@@ -338,8 +358,14 @@ def _csr_ordered(graph: TemporalGraph) -> bool:
     n_edges = len(times)
     if n_edges > 1 and not bool(np.all(times[1:] >= times[:-1])):
         return False
-    for ptr, edges, adj_t in ((graph.out_ptr, graph.out_edges, graph.out_times),
-                              (graph.in_ptr, graph.in_edges, graph.in_times)):
+    for end in (graph.frm, graph.to):
+        end = np.asarray(end)
+        if len(end) != n_edges or (n_edges and (int(end.min()) < 0
+                                                or int(end.max()) >= graph.n_nodes)):
+            return False  # unknown node ids: the reference returns empty slices
+    for ptr, edges, adj_t, endpoint in (
+            (graph.out_ptr, graph.out_edges, graph.out_times, graph.frm),
+            (graph.in_ptr, graph.in_edges, graph.in_times, graph.to)):
         ptr = np.asarray(ptr)
         e = np.asarray(edges).astype(np.int64)
         if (len(ptr) != graph.n_nodes + 1 or int(ptr[0]) != 0 or int(ptr[-1]) != len(e)
@@ -348,6 +374,11 @@ def _csr_ordered(graph: TemporalGraph) -> bool:
         if len(e) and (int(e.min()) < 0 or int(e.max()) >= n_edges):
             return False
         if not np.array_equal(np.asarray(adj_t), times[e]):
+            return False
+        # Segment membership: node v's segment holds only v's edges (the
+        # scatter kernel reads leg1s from mids' in-segments, not senders').
+        owner = np.repeat(np.arange(graph.n_nodes, dtype=np.int64), np.diff(ptr))
+        if not np.array_equal(np.asarray(endpoint)[e].astype(np.int64), owner):
             return False
         if len(e) < 2:
             continue

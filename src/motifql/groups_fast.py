@@ -62,12 +62,9 @@ def csr_time_ordered(graph) -> bool:
 
 # -- label-blind tie order (identical to groups._hkey) -----------------------
 
-_HK_BASE = hashlib.md5(f"{_g._TIE_SEED}:".encode())
-
-
 def _hkey(edge_pos) -> int:
-    h = _HK_BASE.copy()
-    h.update(str(edge_pos).encode())
+    # Reads the seed per call, like the reference: nothing captured at import.
+    h = hashlib.md5(f"{_g._TIE_SEED}:{edge_pos}".encode())
     return int.from_bytes(h.digest()[:8], "big")
 
 
@@ -861,7 +858,7 @@ def _score_fan(graph, anchor_pos: int, plan, libs, crisp, crisp_alpha):
         args = (graph.in_ptr, graph.in_edges, graph.in_times, graph._in_lo)
         side = graph.frm
     all_e, nmem, trunc, expansions = _fan_kernel(
-        graph.times, side, *args, int(graph.watermark), anchor_pos, anchor_t,
+        graph.times, side, *args, float(graph.watermark), anchor_pos, anchor_t,
         float(lb), key_node, _g.DEFAULT_MAX_FANOUT, _g.DEFAULT_MAX_EXPANSIONS,
         _g.MAX_TIED_READINGS)
     truncated = bool(trunc)
@@ -891,7 +888,7 @@ def _score_gather(graph, anchor_pos: int, plan, libs, crisp, crisp_alpha):
         graph.times, graph.frm, graph.to,
         graph.in_ptr, graph.in_edges, graph.in_times, graph._in_lo,
         graph.out_ptr, graph.out_edges, graph.out_times, graph._out_lo,
-        int(graph.watermark), anchor_pos, anchor_t, float(anchor_t - plan.window_s),
+        float(graph.watermark), anchor_pos, anchor_t, float(anchor_t - plan.window_s),
         c_node, _g.DEFAULT_MAX_FANOUT, _g.MAX_TIED_READINGS)
     truncated = bool(trunc)
     expansions = int(expansions)
@@ -954,7 +951,7 @@ def _score_scatter(graph, anchor_pos: int, plan, libs, crisp, crisp_alpha):
     m_var = roles["m"]
     leg1_var, leg2_var = roles["leg1"], roles["leg2"]
     lb = float(anchor_t - plan.window_s)
-    wm = int(graph.watermark)
+    wm = float(graph.watermark)
     (expansions, trunc, senders, leg1, mids, mid_ptr, l2e, l2_tied,
      m0_slot, use_in, pair_key, pair_slot) = _scatter_setup(
         graph.times, graph.frm, graph.in_ptr, graph.in_edges, graph.in_times,
@@ -1021,7 +1018,7 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp, crisp_alpha):
         graph.times, graph.frm, graph.to,
         graph.in_ptr, graph.in_edges, graph.in_times, graph._in_lo,
         graph.out_ptr, graph.out_edges, graph.out_times, graph._out_lo,
-        int(graph.watermark), anchor_t, float(anchor_t - window_s), a_node, b_node,
+        float(graph.watermark), anchor_t, float(anchor_t - window_s), a_node, b_node,
         _g.BUTTERFLY_MAX_PARTNERS, _g.DEFAULT_MAX_FANOUT, _g.DEFAULT_MAX_EXPANSIONS)
     truncated = bool(trunc)
     expansions = int(expansions)
@@ -1071,10 +1068,16 @@ def _score_butterfly(graph, anchor_pos: int, plan, libs, crisp, crisp_alpha):
 
 # -- entry points ------------------------------------------------------------
 
+def _int_anchor(anchor_pos) -> bool:
+    """Integer, non-bool anchors only; the reference raises (or masks) on
+    anything else, so those run there and fail exactly as before."""
+    return isinstance(anchor_pos, (int, np.integer)) and not isinstance(anchor_pos, bool)
+
+
 def score_group(graph, anchor_pos, plan, libs, crisp: bool = False,
                 crisp_alpha: float = 0.0):
     """Fast GroupPlan scoring; None when the reference must run."""
-    if not _caps_ok() or not csr_time_ordered(graph):
+    if not _caps_ok() or not csr_time_ordered(graph) or not _int_anchor(anchor_pos):
         return None
     anchor_pos = int(anchor_pos)
     if plan.kind == "fan":
@@ -1089,7 +1092,7 @@ def score_group(graph, anchor_pos, plan, libs, crisp: bool = False,
 def score_butterfly(graph, anchor_pos, plan, libs, crisp: bool = False,
                     crisp_alpha: float = 0.0):
     """Fast ButterflyPlan scoring; None when the reference must run."""
-    if not csr_time_ordered(graph):
+    if not csr_time_ordered(graph) or not _int_anchor(anchor_pos):
         return None
     return _score_butterfly(graph, int(anchor_pos), plan, libs, crisp, crisp_alpha)
 

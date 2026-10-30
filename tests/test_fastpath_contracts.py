@@ -336,3 +336,105 @@ def test_score_batch_empty_and_unknown_plans(doc) -> None:
     assert [a.shape for a in groups.score_batch(g, [], object(), libs)] == [(0,)] * 4
     with pytest.raises(TypeError):
         groups.score_batch(g, [0], object(), libs)
+
+
+# -- final-review regressions -------------------------------------------------------
+
+def _rebuild(g, **over) -> TemporalGraph:
+    kw = dict(times=g.times, frm=g.frm, to=g.to, amount=g.amount, transfer_id=g.transfer_id,
+              nodes=g.nodes, out_ptr=g.out_ptr, out_edges=g.out_edges, out_times=g.out_times,
+              in_ptr=g.in_ptr, in_edges=g.in_edges, in_times=g.in_times,
+              retention_s=g.retention_s)
+    kw.update(over)
+    return TemporalGraph(**kw)
+
+
+def test_construction_copies_and_leaves_caller_arrays_writable() -> None:
+    g = TemporalGraph.from_transfers(_frame(6))
+    amount = g.amount.copy()
+    h = _rebuild(g, amount=amount)
+    assert amount.flags.writeable and h.amount is not amount
+    amount[:] = 1.0  # the caller's buffer moves; the graph's copy does not
+    assert np.array_equal(h.amount, g.amount)
+
+
+def test_pickled_graph_stays_frozen() -> None:
+    import copy
+    import pickle
+    g = TemporalGraph.from_transfers(_frame(7))
+    for clone in (pickle.loads(pickle.dumps(g)), copy.deepcopy(g)):
+        assert clone.csr_ordered
+        with pytest.raises(ValueError):
+            clone.amount[0] = 1.0
+        with pytest.raises(ValueError):
+            clone.in_amount[0] = 1.0
+
+
+def test_out_of_range_node_ids_disable_fast_paths() -> None:
+    g = TemporalGraph.from_transfers(_frame(8))
+    frm = g.frm.copy()
+    frm[::7] = -1
+    assert not _rebuild(g, frm=frm).csr_ordered
+
+
+def test_csr_segment_membership_is_checked() -> None:
+    g = TemporalGraph.from_transfers(_frame(9))
+    to = g.to.copy()
+    to[::5] = (to[::5] + 1) % g.n_nodes  # CSR left as built for the old `to`
+    assert not _rebuild(g, to=to).csr_ordered
+
+
+def test_tie_seed_is_read_per_call(doc, monkeypatch) -> None:
+    plan = compile_motif(doc, "bipartite_butterfly")
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame(10))
+    run = lambda: [_canon(groups.score_any(g, a, plan, libs)) for a in range(g.n_edges)]
+    run()  # first fast call loads groups_fast with the default seed
+    monkeypatch.setattr(groups, "_TIE_SEED", "motifql-member-tie-test")
+    assert groups_fast._hkey(7) == groups._hkey(7)
+    fast, pure = _both(run)
+    assert fast == pure
+
+
+@pytest.mark.parametrize("name", ["fan_out", "scatter_gather", "gather_scatter",
+                                  "bipartite_butterfly", "rt_fast"])
+def test_fractional_watermark_matches_pure(doc, name) -> None:
+    plan = compile_motif(doc, name)
+    libs = libs_from_doc(doc)
+    frame = _frame(11)
+
+    def run():
+        g = TemporalGraph.from_transfers(frame)
+        out = []
+        for a in range(g.n_edges):
+            g.evict_before(int(g.times[a]) - 6 * 3600 + 0.5)
+            out.append(_canon(groups.score_any(g, a, plan, libs)))
+        return out, g._in_lo.tolist(), g._out_lo.tolist()
+    fast, pure = _both(run)
+    assert fast == pure
+
+
+@pytest.mark.parametrize("anchor", [5.0, np.float64(5.0), True])
+def test_non_integer_anchor_errors_like_reference(doc, anchor) -> None:
+    g = TemporalGraph.from_transfers(_frame(12))
+    libs = libs_from_doc(doc)
+    for name in ("fan_out", "scatter_gather", "gather_scatter", "bipartite_butterfly"):
+        plan = compile_motif(doc, name)
+
+        def run():
+            try:
+                return ("ok", _canon(groups.score_any(g, anchor, plan, libs)))
+            except Exception as exc:  # noqa: BLE001
+                return ("raise", type(exc).__name__)
+        fast, pure = _both(run)
+        assert fast == pure
+
+
+def test_warm_up_leaves_real_graph_untouched(doc) -> None:
+    g = TemporalGraph.from_transfers(_frame(13))
+    g.evict_before(int(g.times[40]))
+    before = (g._in_lo.copy(), g._out_lo.copy(), g.watermark)
+    for name in ("rt_fast", "fan_out", "scatter_gather", "bipartite_butterfly"):
+        groups.warm_up(compile_motif(doc, name), libs_from_doc(doc))
+    assert np.array_equal(g._in_lo, before[0]) and np.array_equal(g._out_lo, before[1])
+    assert g.watermark == before[2]

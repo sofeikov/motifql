@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval import evaluate, splits  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
-from motifql.groups import score_batch  # noqa: E402
+from motifql.groups import score_batch, warm_up  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
 from motifql.planner import compile_motif  # noqa: E402
 
@@ -84,10 +84,11 @@ def _replay(positions: npt.NDArray[np.int64], workers: int,
     if workers <= 1:
         _, *out = _score_job((positions, True))
     else:
-        # Zero anchors: no scoring and no side effects, but the compiled
-        # kernels are loaded here once and inherited by every forked
-        # worker, instead of each worker loading them again (~0.6 s).
-        _score_job((positions[:0], True))
+        # Load the compiled kernels once, before the fork (on a synthetic
+        # graph: no side effects here), so every forked worker inherits
+        # them instead of loading them again (~0.6 s each).
+        warm_up(_PLAN, _LIBS, prune=_PRUNE, crisp=_CRISP,
+                crisp_alpha=_CALPHA, floor=_FLOOR)
         n_shards = 8 * workers
         shards = [positions[i::n_shards] for i in range(n_shards)]
         shards = [s for s in shards if len(s)]

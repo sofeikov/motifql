@@ -939,6 +939,40 @@ def score_batch(graph, positions, plan, libs, prune: bool = True,
     return top, found, exps, trunc
 
 
+def warm_up(plan, libs, prune: bool = True, crisp: bool = False,
+            crisp_alpha: float = 0.0, floor: float | None = None) -> None:
+    """Load the compiled kernels `plan` uses into this process.
+
+    Scores a small synthetic graph (never a caller's graph, so no
+    eviction floors move) and discards the results. Harnesses call it
+    before forking a Pool so every worker inherits the loaded machine
+    code instead of loading it again. Any error is left for the real
+    call to raise.
+    """
+    import polars as pl
+
+    from motifql.graph import TemporalGraph
+
+    rng = np.random.default_rng(0)
+    n = 240
+    accts = [str(i) for i in rng.integers(0, 8, size=2 * n)]
+    frame = pl.DataFrame({
+        "transfer_id": np.arange(n, dtype=np.uint32),
+        "timestamp": pl.datetime_range(
+            pl.datetime(2022, 9, 1), pl.datetime(2022, 9, 1) + pl.duration(minutes=20 * (n - 1)),
+            "20m", eager=True),
+        "from_bank": ["001"] * n, "from_account": accts[:n],
+        "to_bank": ["001"] * n, "to_account": accts[n:],
+        "amount_usd": 1000.0 + rng.normal(0.0, 50.0, size=n),
+    })
+    try:
+        graph = TemporalGraph.from_transfers(frame)
+        score_batch(graph, np.arange(graph.n_edges), plan, libs, prune=prune,
+                    crisp=crisp, crisp_alpha=crisp_alpha, floor=floor)
+    except Exception:  # noqa: BLE001 - warm-up only; the real call reports
+        log.debug("warm_up failed for %s", getattr(plan, "name", plan), exc_info=True)
+
+
 def score_group(graph, anchor_pos: int, plan, libs, crisp: bool = False,
                 crisp_alpha: float = 0.0) -> GroupResult:
     """Score one anchor against a GroupPlan by kind."""
