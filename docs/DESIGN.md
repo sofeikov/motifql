@@ -222,11 +222,15 @@ pure-Python code stays as the reference.
   Run them after any change to either side.
 - **No hidden caches.** Nothing is memoised between calls. A path plan's
   atom table is compiled again on every `score` / batch call (about 5 µs),
-  so an edited term library is always seen. The kernels' graph-side inputs
-  (`in_frm`, `in_amount`, the `csr_ordered` flag) are `TemporalGraph`
-  fields built with the CSR. Graph arrays are fixed after construction:
-  they are read-only and cannot be rebound, so to change the data, build a
-  new graph. Only the retention state (watermark, lazy floors) mutates.
+  so an edited term library is always seen. The kernels read the graph's
+  own arrays on every call, so in-place edits to `amount` are seen at
+  once. Their one graph-side precondition is
+  the `csr_ordered` flag, which is checked when the graph is built and
+  again on first use after `times`, `frm`, `to`, `nodes` or a CSR array is
+  rebound (rebuilding the CSR rebinds them). Edges kept outside the CSR,
+  such as a streaming overflow, are not read by the kernels: while any
+  exist, `matcher._graph_ok` and `groups_fast.csr_time_ordered` must
+  return False so the reference runs, until the kernels learn to read them.
 
 ## 7. Use of Meta models
 

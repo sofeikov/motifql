@@ -1,9 +1,9 @@
 """Contracts around the compiled fast paths (no hidden caches, edge cases).
 
 * Nothing is memoised across calls: editing a term definition in the
-  libs dict between calls changes fast and pure results alike, and graph
-  arrays (with the in-adjacency copies derived from them) cannot be
-  changed after construction, so no derived copy can go stale.
+  libs dict, or a graph's amounts in place, between calls changes fast
+  and pure results alike; rebinding a structure array re-runs the CSR
+  ordering check.
 * ``find_all`` with non-int, infinite, NaN or absurdly large caps behaves
   exactly like the pure walk (the kernel mirrors the cap or falls back).
 * The scatter count gate clamps literals past int64 (found=False, as in
@@ -160,27 +160,42 @@ def test_term_edit_between_calls_is_seen_by_group_fast_path(doc) -> None:
         assert after_fast != before_fast, f"{name}: the edit should change some scores"
 
 
-def test_graph_arrays_are_fixed_at_construction() -> None:
+def test_graph_arrays_stay_writable() -> None:
     g = TemporalGraph.from_transfers(_frame(3))
-    idx = g.in_edges.astype(np.int64)
-    assert np.array_equal(g.in_frm, g.frm[idx])
-    assert np.array_equal(g.in_amount, g.amount[idx])
     assert g.csr_ordered is True
-    for name in ("times", "frm", "to", "amount", "in_times", "in_edges", "in_frm",
-                 "in_amount", "out_times", "out_edges"):
-        arr = getattr(g, name)
-        with pytest.raises(ValueError):
-            arr[0] = arr[1]  # in-place edits would leave the copies stale
-        with pytest.raises(AttributeError):
-            setattr(g, name, arr.copy())  # so would rebinding
-    with pytest.raises(AttributeError):
-        g.csr_ordered = False
-    g.evict_before(int(g.times[5]))  # retention state still moves
-    assert g.watermark == int(g.times[5])
+    for name in ("times", "frm", "to", "amount", "in_times", "in_edges",
+                 "out_times", "out_edges"):
+        assert getattr(g, name).flags.writeable, name
+    assert not hasattr(g, "in_frm") and not hasattr(g, "in_amount")  # no derived copies
+
+
+@pytest.mark.parametrize("name", ["rt_fast", "scatter_gather"])
+def test_in_place_amount_edit_is_seen(doc, name) -> None:
+    plan = compile_motif(doc, name)
+    libs = libs_from_doc(doc)
+    g = TemporalGraph.from_transfers(_frame(4))
+    anchors = list(range(g.n_edges))
+    run = lambda: [_canon(groups.score_any(g, a, plan, libs)) for a in anchors]
+    before_fast, before_pure = _both(run)
+    g.amount[:] = g.amount * np.linspace(0.5, 1.5, g.n_edges, dtype=np.float32)
+    assert M._graph_ok(g) and groups_fast.csr_time_ordered(g)  # fast path still on
+    after_fast, after_pure = _both(run)
+    assert before_fast == before_pure and after_fast == after_pure
+    assert after_fast != before_fast, f"{name}: the edit should change some scores"
+
+
+def test_rebinding_structure_rechecks_order() -> None:
+    g = TemporalGraph.from_transfers(_frame(5))
+    good = g.in_edges
+    g.in_edges = good[::-1].copy()
+    assert not g.csr_ordered
+    assert not M._graph_ok(g) and not groups_fast.csr_time_ordered(g)
+    g.in_edges = good
+    assert g.csr_ordered and M._graph_ok(g)
 
 
 def test_rebuilt_graph_with_new_amounts_agrees(doc) -> None:
-    """Changing data means a new graph; its derived copies follow."""
+    """A graph built from changed data scores the changed data."""
     frame = _frame(4)
     plan = compile_motif(doc, "rt_fast")
     libs = libs_from_doc(doc)
@@ -349,25 +364,15 @@ def _rebuild(g, **over) -> TemporalGraph:
     return TemporalGraph(**kw)
 
 
-def test_construction_copies_and_leaves_caller_arrays_writable() -> None:
-    g = TemporalGraph.from_transfers(_frame(6))
-    amount = g.amount.copy()
-    h = _rebuild(g, amount=amount)
-    assert amount.flags.writeable and h.amount is not amount
-    amount[:] = 1.0  # the caller's buffer moves; the graph's copy does not
-    assert np.array_equal(h.amount, g.amount)
-
-
-def test_pickled_graph_stays_frozen() -> None:
+def test_pickled_graph_keeps_order_check() -> None:
     import copy
     import pickle
     g = TemporalGraph.from_transfers(_frame(7))
     for clone in (pickle.loads(pickle.dumps(g)), copy.deepcopy(g)):
-        assert clone.csr_ordered
-        with pytest.raises(ValueError):
-            clone.amount[0] = 1.0
-        with pytest.raises(ValueError):
-            clone.in_amount[0] = 1.0
+        assert clone.csr_ordered and M._graph_ok(clone)
+        assert clone.amount.flags.writeable
+        clone.in_edges = clone.in_edges[::-1].copy()
+        assert not clone.csr_ordered
 
 
 def test_out_of_range_node_ids_disable_fast_paths() -> None:

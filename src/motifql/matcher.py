@@ -510,9 +510,10 @@ def _combine(parts: list[float], tnorm: str) -> float:
 # Nothing is cached across calls. A plan's atom parameters are compiled on
 # every score() / score_path_batch() call from the term definitions as
 # they are then (about 5 us per call on the amlworld path plans). The
-# graph-side inputs (in-adjacency copies of sender and amount, the CSR
-# ordering flag) are TemporalGraph fields fixed at construction. Anything
-# the kernel does not model falls back to the pure-Python code.
+# kernel reads the graph's own arrays at each call; the only graph-side
+# precondition is the CSR ordering flag (graph.py), re-checked whenever
+# the structure arrays are rebound. Anything the kernel does not model
+# falls back to the pure-Python code.
 
 _SHAPES = {"trapezoid": (0, 4), "triangle": (0, 3), "ramp": (2, 2), "ramp_down": (3, 2)}
 
@@ -605,8 +606,8 @@ def _graph_ok(graph: TemporalGraph) -> bool:
     """True when the kernel's array assumptions hold for this graph.
 
     ``csr_ordered`` (time-sorted segments, so ``_capped``'s stable argsort
-    is the identity) is checked once when the graph is built; its arrays
-    are read-only afterwards. The rest are attribute reads.
+    is the identity) is checked when the graph is built and again after
+    its structure arrays are rebound. The rest are attribute reads.
     """
     return (graph.csr_ordered and graph.in_times.dtype == np.int64
             and graph.times.dtype == np.int64 and graph.in_ptr.dtype == np.int64
@@ -623,10 +624,9 @@ def _fast_ok(graph: TemporalGraph, anchor_pos, max_fanout: int) -> bool:
 
 
 def _kernel_args(graph: TemporalGraph) -> tuple:
-    """Graph arrays for the kernel, including the in-adjacency duplicates
-    ``in_frm`` / ``in_amount`` (TemporalGraph fields, see graph.py)."""
+    """Graph arrays for the kernel, read as they are at this call."""
     return (graph.times, graph.frm, graph.to, graph.amount, graph.in_ptr,
-            graph.in_edges, graph.in_times, graph.in_frm, graph.in_amount)
+            graph.in_edges, graph.in_times)
 
 
 _DUMMY_ENUM = np.empty((1, 1), dtype=np.int64)

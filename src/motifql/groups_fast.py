@@ -11,8 +11,9 @@ moved into numba kernels:
 * Every CSR segment is already in (time, position) order: positions are
   time-sorted and ``_csr`` uses a stable argsort. The reference re-sorts
   each list with a Python key lambda; the kernels rely on the order
-  instead. ``TemporalGraph`` checks the invariant once at construction
-  (``csr_ordered``, read by :func:`csr_time_ordered`) and the fast path
+  instead. ``TemporalGraph`` checks the invariant at construction and
+  after a structure rebind (``csr_ordered``, read by
+  :func:`csr_time_ordered`) and the fast path
   falls back to the reference when it fails.
 * Group facts that the having/soft ASTs never read are not built. The
   context is lazy: edge amounts, times, span and per-member readings are
@@ -55,8 +56,8 @@ SCATTER_STRATEGY = 0
 def csr_time_ordered(graph) -> bool:
     """True when every CSR segment is in (time, position) order and
     positions are time-sorted, so position order is (time, position)
-    order everywhere. ``TemporalGraph`` checks this once at construction
-    (``csr_ordered``); its arrays are read-only afterwards."""
+    order everywhere. ``TemporalGraph`` checks this at construction and
+    after its structure arrays are rebound (``csr_ordered``)."""
     return bool(graph.csr_ordered)
 
 

@@ -20,23 +20,22 @@ Layout
   duplicate the timestamps in adjacency order so every window lookup is a
   plain ``numpy.searchsorted`` on a contiguous view (one extra int64 per
   edge per direction; revisited only if HI-Medium forces it).
-* ``in_frm`` / ``in_amount`` duplicate sender and amount in in-adjacency
-  order the same way (int32 + float32 per edge): the compiled path walk
-  (``motifql._pathkernel``) reads a candidate's fields from one contiguous
-  segment instead of scattered rows.
-* ``csr_ordered`` records, once at construction, the invariant the
-  compiled fast paths rely on: ``times`` non-decreasing, every CSR
-  segment in strictly increasing position order (so position order is
-  (time, position) order), each segment holding only its node's edges,
-  node ids in range, and ``out_times`` / ``in_times`` equal to ``times``
-  at those positions. ``from_transfers`` always produces it;
-  when it is False the fast paths run the pure-Python reference.
+* ``csr_ordered`` says whether the CSR holds the invariant the compiled
+  fast paths rely on: ``times`` non-decreasing, every CSR segment in
+  strictly increasing position order (so position order is (time,
+  position) order), each segment holding only its node's edges, node ids
+  in range, and ``out_times`` / ``in_times`` equal to ``times`` at those
+  positions. ``from_transfers`` always produces it; when it is False the
+  fast paths run the pure-Python reference. It is checked at
+  construction and again on first use after ``times``, ``frm``, ``to``,
+  ``nodes`` or any CSR array is rebound.
 
-Every array above, and the duplicates in particular, is fixed at
-construction: the graph copies its inputs, makes the copies read-only
-(again after unpickling) and refuses to rebind them, so no derived copy
-can go stale. Build a new graph to change the
-data. Only the retention state below (watermark, lazy floors) mutates.
+The arrays are ordinary writable numpy arrays and the graph keeps no
+other copy of them. ``amount`` can be edited in place: every reader,
+compiled or not, reads it directly. ``times``,
+the endpoints and the CSR are the structure (``out_times`` / ``in_times``
+already duplicate ``times``), so changing them means rebuilding the CSR,
+i.e. rebinding its arrays, which also re-runs the ordering check.
 
 Retention
 ---------
@@ -96,12 +95,6 @@ class TemporalGraph:
         in_times: npt.NDArray[np.int64],
         retention_s: int,
     ) -> None:
-        # Private copies: freezing them below must not touch the caller's
-        # arrays, and no outside buffer or view can change them later.
-        times, frm, to, amount, transfer_id = (
-            _own(a) for a in (times, frm, to, amount, transfer_id))
-        out_ptr, out_edges, out_times, in_ptr, in_edges, in_times = (
-            _own(a) for a in (out_ptr, out_edges, out_times, in_ptr, in_edges, in_times))
         self.times = times
         self.frm = frm
         self.to = to
@@ -115,17 +108,8 @@ class TemporalGraph:
         self.in_ptr = in_ptr
         self.in_edges = in_edges
         self.in_times = in_times
-        # Derived duplicates (see module docstring): same role as in_times.
-        # Malformed CSR gets empty duplicates; csr_ordered is then False and
-        # nothing reads them.
-        idx = np.asarray(in_edges).astype(np.int64)
-        in_range = len(idx) == 0 or (int(idx.min()) >= 0 and int(idx.max()) < len(times))
-        if not in_range:
-            idx = idx[:0]
-        self.in_frm = np.ascontiguousarray(np.asarray(frm)[idx])
-        self.in_amount = np.ascontiguousarray(np.asarray(amount)[idx])
-        self.csr_ordered = in_range and _csr_ordered(self)
-        self._freeze()
+        # Checked now, in the building process, so forked workers inherit it.
+        self._csr_ok = _csr_ordered(self)
         self.retention_s = retention_s
         self.watermark = int(times[0]) if len(times) else 0
         # Lazy per-node eviction floors, rebased on first access past watermark.
@@ -133,24 +117,18 @@ class TemporalGraph:
         self._in_lo = np.zeros(len(nodes), dtype=np.int64)
         self._floors_clean = True
 
-    def _freeze(self) -> None:
-        for name in _FROZEN_ARRAYS:
-            arr = getattr(self, name)
-            if isinstance(arr, np.ndarray):
-                arr.flags.writeable = False
-
-    def __setstate__(self, state: dict) -> None:
-        # Pickle and deepcopy restore arrays writable; re-freeze them.
-        self.__dict__.update(state)
-        self._freeze()
-
     def __setattr__(self, name: str, value) -> None:
-        # Edge and CSR arrays (and the copies derived from them) are fixed
-        # at construction; rebinding one would leave the others stale.
-        if name in _FROZEN_ATTRS and name in self.__dict__:
-            raise AttributeError(
-                f"TemporalGraph.{name} is fixed at construction; build a new graph")
         object.__setattr__(self, name, value)
+        if name in _STRUCTURE:
+            # New structure: re-run the ordering check on next use.
+            object.__setattr__(self, "_csr_ok", None)
+
+    @property
+    def csr_ordered(self) -> bool:
+        """The CSR invariant (module docstring) for the current arrays."""
+        if self._csr_ok is None:
+            self._csr_ok = _csr_ordered(self)
+        return self._csr_ok
 
     # -- construction ----------------------------------------------------
 
@@ -336,16 +314,12 @@ class TemporalGraph:
         }
 
 
-def _own(arr):
-    return np.array(arr) if isinstance(arr, np.ndarray) else arr
-
-
 _EMPTY_U32 = np.empty(0, dtype=np.uint32)
 _EMPTY_I64 = np.empty(0, dtype=np.int64)
 
-_FROZEN_ARRAYS = ("times", "frm", "to", "amount", "transfer_id", "out_ptr", "out_edges",
-                  "out_times", "in_ptr", "in_edges", "in_times", "in_frm", "in_amount")
-_FROZEN_ATTRS = frozenset(_FROZEN_ARRAYS + ("nodes", "node_index", "csr_ordered"))
+# Attributes the CSR ordering check reads; rebinding one re-runs it.
+_STRUCTURE = frozenset(("times", "frm", "to", "nodes", "out_ptr", "out_edges",
+                        "out_times", "in_ptr", "in_edges", "in_times"))
 
 
 def _csr_ordered(graph: TemporalGraph) -> bool:

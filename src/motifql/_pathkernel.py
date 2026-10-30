@@ -161,7 +161,7 @@ def _crisp_neg(d, neg, crisp, alpha):
 
 
 @njit(cache=True)
-def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
+def walk(times, frm, to, amount, in_ptr, in_edges, in_times,
          in_lo, write_lo, watermark, anchor_pos, min_hops, max_hops, window_s,
          closed, max_fanout, max_expansions, mode, prune, grp_ptr, atoms,
          tnorm_prod, emit, floor0, crisp, alpha, enum_cap, enum_out, enum_len,
@@ -172,10 +172,6 @@ def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
     n_enum). MODE_SCORE writes the best witness (oldest first, anchor last)
     to ``best_out``; MODE_ENUM writes witnesses to ``enum_out``/``enum_len``
     and stops once ``enum_cap`` are collected (``on_accept`` returning True).
-
-    ``in_frm`` / ``in_amt`` are ``frm[in_edges]`` / ``amount[in_edges]``
-    (as ``in_times`` is ``times[in_edges]``), so candidate fields come from
-    the contiguous segment rather than scattered global rows.
     """
     ngroups = grp_ptr.shape[0] - 1
     anchor_t = times[anchor_pos]
@@ -242,7 +238,7 @@ def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
             nlev -= 1
             continue
         expansions += 1
-        prev = np.int64(in_frm[slot])
+        prev = np.int64(frm[in_edges[slot]])
         plen = nlev - 1
         hops = plen + 2
         if hops > max_hops:
@@ -271,7 +267,7 @@ def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
                 par_t = anchor_t
                 par_a = anchor_a
             gap = np.float64(par_t - edge_t)
-            cand_a = np.float64(in_amt[slot])
+            cand_a = np.float64(amount[in_edges[slot]])
             for g in range(ngroups):
                 k0 = grp_ptr[g]
                 k1 = grp_ptr[g + 1]
@@ -371,7 +367,7 @@ def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
         path[plen] = np.int64(in_edges[slot])
         path_node[plen] = prev
         path_t[plen] = edge_t
-        path_a[plen] = np.float64(in_amt[slot])
+        path_a[plen] = np.float64(amount[in_edges[slot]])
         lvl_j[nlev] = j2
         lvl_n[nlev] = n2
         lvl_next[nlev] = 0
@@ -381,8 +377,8 @@ def walk(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
 
 
 @njit(cache=True)
-def score_batch(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm,
-                in_amt, in_lo, watermark, positions, min_hops, max_hops, window_s,
+def score_batch(times, frm, to, amount, in_ptr, in_edges, in_times,
+                in_lo, watermark, positions, min_hops, max_hops, window_s,
                 closed, max_fanout, max_expansions, prune, grp_ptr, atoms,
                 tnorm_prod, emit, floor0, crisp, alpha, out_found, out_score,
                 out_top, out_trunc, out_exp, out_wit, out_wlen):
@@ -393,7 +389,7 @@ def score_batch(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm,
     best = np.empty(max(width, 2), dtype=np.int64)
     for r in range(positions.shape[0]):
         f, bl, bs, top, tr, ex, _ = walk(
-            times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
+            times, frm, to, amount, in_ptr, in_edges, in_times,
             in_lo, True, watermark, positions[r], min_hops, max_hops, window_s,
             closed, max_fanout, max_expansions, MODE_SCORE, prune, grp_ptr, atoms,
             tnorm_prod, emit, floor0, crisp, alpha, 1, dummy_enum, dummy_len, best)
@@ -409,7 +405,7 @@ def score_batch(times, frm, to, amount, in_ptr, in_edges, in_times, in_frm,
 
 @njit(cache=True, parallel=True)
 def score_batch_parallel(times, frm, to, amount, in_ptr, in_edges, in_times,
-                         in_frm, in_amt, lo_eff, watermark, positions, min_hops,
+                         lo_eff, watermark, positions, min_hops,
                          max_hops, window_s, closed, max_fanout, max_expansions,
                          prune, grp_ptr, atoms, tnorm_prod, emit, floor0, crisp,
                          alpha, out_found, out_score, out_top, out_trunc, out_exp,
@@ -426,7 +422,7 @@ def score_batch_parallel(times, frm, to, amount, in_ptr, in_edges, in_times,
         dummy_len = np.empty(1, dtype=np.int64)
         best = np.empty(max(width, 2), dtype=np.int64)
         f, bl, bs, top, tr, ex, _ = walk(
-            times, frm, to, amount, in_ptr, in_edges, in_times, in_frm, in_amt,
+            times, frm, to, amount, in_ptr, in_edges, in_times,
             lo_eff, False, watermark, positions[r], min_hops, max_hops, window_s,
             closed, max_fanout, max_expansions, MODE_SCORE, prune, grp_ptr, atoms,
             tnorm_prod, emit, floor0, crisp, alpha, 1, dummy_enum, dummy_len, best)
