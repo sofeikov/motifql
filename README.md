@@ -165,13 +165,29 @@ The review history is public:
 
 | Done | In progress |
 |---|---|
-| Language, grammar, compiler and static checks | Demo UI: English box → motif → animated witness |
-| Path matcher with exact best-witness search | LI-Small replication on the current engine |
-| Group motifs (fan, scatter, gather, butterfly) | Discovery agent proposals |
+| Language, grammar, compiler and static checks | LI-Small replication on the current engine |
+| Path matcher with exact best-witness search | Discovery agent proposals |
+| Group motifs (fan, scatter, gather, butterfly) | |
 | Evaluation harness, baselines, fuzzy vs exact | |
 | Muse Spark compiler with repair loop | |
 | Streaming ingest, live engine, ezrules proxy (stub-tested) | |
 | RQ3 latency benchmarks (~15× live headroom over peak minute) | |
+| Demo UI: English box → motif → animated witness | |
+
+## Demo
+
+Describe a pattern in English; Muse Spark writes the motif; the
+witness animates hop by hop with per-hop amounts, gaps and condition
+degrees. Needs `MUSE_KEY` for live compilations — the scripted demo
+(a committed Spark reply tracing train CYCLE instance 102) works
+without one:
+
+```bash
+PYTHONPATH=src uv run python -m motifql.server --demo --port 8000
+# open http://127.0.0.1:8000/
+```
+
+Rehearsal script: [docs/REHEARSAL.md](docs/REHEARSAL.md).
 
 ## Reproduce
 

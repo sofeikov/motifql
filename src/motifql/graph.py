@@ -124,6 +124,8 @@ class TemporalGraph:
         self._amount = _with_spare(np.asarray(amount))
         self._transfer_id = _with_spare(np.asarray(transfer_id))
         self._n_edges = n
+        self._tid_identity = bool(
+            np.array_equal(np.asarray(transfer_id), np.arange(n)))
         self.nodes = nodes
         self.node_index = {key: i for i, key in enumerate(nodes)}
         self.out_ptr = out_ptr
@@ -276,6 +278,22 @@ class TemporalGraph:
         """Composite ``"bank/account"`` key for a node id (witness output)."""
         return self.nodes[node]
 
+    def pos_of(self, transfer_id: int) -> int:
+        """Edge position of a transfer id; -1 when absent.
+
+        O(1) while transfer ids mirror positions (prep builds and the
+        engine's counter preserve this); otherwise one argsort +
+        binary search.
+        """
+        if self._tid_identity and 0 <= transfer_id < self._n_edges:
+            return int(transfer_id)
+        t = self._transfer_id[:self._n_edges]
+        order = np.argsort(t, kind="stable")
+        j = int(np.searchsorted(t[order], transfer_id))
+        if j < len(order) and int(t[order[j]]) == transfer_id:
+            return int(order[j])
+        return -1
+
     @property
     def n_nodes(self) -> int:
         return len(self.nodes)
@@ -328,6 +346,8 @@ class TemporalGraph:
         self._to[p] = t
         self._amount[p] = amount_usd
         self._transfer_id[p] = transfer_id
+        if self._tid_identity and transfer_id != p:
+            self._tid_identity = False
         self._n_edges += 1
         _ov_insert(self._ov_out, f, int(timestamp), p)
         _ov_insert(self._ov_in, t, int(timestamp), p)
@@ -372,6 +392,8 @@ class TemporalGraph:
             a = getattr(self, attr)
             a[:m] = a[order]  # RHS is a fancy-index copy: safe in place
         self._n_edges = m
+        self._tid_identity = bool(
+            np.array_equal(self._transfer_id[:m], np.arange(m)))
         times = self._times[:m]
         self.out_ptr, self.out_edges, self.out_times = _csr(
             self._frm[:m], times, len(self.nodes))
