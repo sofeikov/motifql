@@ -1,0 +1,5 @@
+{
+  "english": "Money leaves an account and comes back to it within 7 days, through 2 to 5 transfers. Every hop moves nearly the same amount (within 20% of the previous hop) with patient gaps (fully true to 1 day, false by 5 days). All conditions must hold; fire at 0.5.",
+  "motif": "term patient = trapezoid(0h, 0h, 24h, 120h)\n\nmotif cand {\n  match (a:account) -[e:transfer*2..5]-> (a:account)\n  where e is time_ordered and span(e) <= 7d\n  soft each e: e.gap is patient and each e: e.amount ~= prev.amount within 20%\n  score min\n  emit when score >= 0.5\n}\n",
+  "provenance": "muse-spark-1.3 via eval/results cache, RQ4 cycle-basic; verified compiling + catches train CYCLE 102"
+}

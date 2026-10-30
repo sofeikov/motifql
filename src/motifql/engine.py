@@ -140,10 +140,21 @@ class Engine:
             self.graph.evict_before(t - self.graph.retention_s)
             return [self._score_pos(pos, name, plan) for name, plan in self._plans]
 
-    def _score_pos(self, pos: int, name: str, plan) -> MotifResult:
+    def score_with(self, pos: int, plan, libs, name: str = "cand") -> MotifResult:
+        """Score one position against an ad-hoc plan (compile-then-show).
+
+        For candidates that are not among the engine's own motifs; the
+        result shape matches `score` exactly.
+        """
+        with self._lock:
+            return self._score_pos(pos, name, plan, libs)
+
+    def _score_pos(self, pos: int, name: str, plan, libs=None) -> MotifResult:
         # Exact floor: default pruning gates path top_scores at emit,
         # which would hide sub-emit scores from downstream rules.
-        res = score_any(self.graph, pos, plan, self._libs, floor=EXACT_FLOOR)
+        res = score_any(self.graph, pos, plan,
+                        self._libs if libs is None else libs,
+                        floor=EXACT_FLOOR)
         return MotifResult(
             motif=name, found=res.found, score=res.score,
             top_score=res.top_score,

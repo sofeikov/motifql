@@ -287,3 +287,21 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   `rebuild()`), `_STRUCTURE` tracks the backing arrays, 2 more
   fast-vs-Python append tests; RQ3 re-run (replay ~11.9k/s,
   outputs identical).
+
+## Nov 3 stage — demo UI, `/compile`, rehearsal script
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `src/motifql/compile_service.py`: `POST /compile` (repair loop +
+  sample/pinned witnesses, source labeled model/cache/canned);
+  committed `ui/canned.json` (genuine Spark cycle-basic reply).
+- `ui/index.html` + `ui/app.js`: self-contained page — English box,
+  motif, SVG witness with hop-by-hop playback, captions, degree
+  bars, transport; `?at=` stills, reduced-motion final frame.
+- `src/motifql/server.py`: `/compile`, `/`, `/app.js`,
+  `/demo-config`, `--demo` boot with rehearsal card.
+- `graph.pos_of` + `Engine.score_with` for pinned/ad-hoc scoring.
+- `docs/REHEARSAL.md`: beats, timings, fallbacks, checklist;
+  `docs/2026-11-07-demo-ui.md`: this day's report.
+- 8 tests; headless-Firefox screenshots at 5 states, read and
+  iterated; full suite green both modes (325/325).
