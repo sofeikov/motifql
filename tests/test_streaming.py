@@ -137,6 +137,25 @@ def test_append_new_accounts() -> None:
     assert g.out_degree(n) == 1
 
 
+def test_append_position_valid_across_auto_rebuild() -> None:
+    # The auto-rebuild runs before the edge is written: even when it
+    # compacts expired edges away, the returned position is the new
+    # edge's (pre-fix it pointed past n_edges, or at another transfer).
+    rng = np.random.default_rng(43)
+    accts = [f"A{i:02d}" for i in range(6)]
+    df = _frame(_random_rows(rng, 10, accts))
+    g = TemporalGraph.from_transfers(df)
+    g.rebuild_threshold = 1
+    t1 = int(g.times[-1]) + 60
+    g.append(t1, "001", "X", "001", "Y", 1.0, 100)
+    g.evict_before(int(g.times[5]))  # expire the first 5 edges
+    p = g.append(t1 + 60, "001", "X", "001", "Y", 2.0, 101)
+    assert g._appended == 1  # the threshold fired first and reset
+    assert p == g.n_edges - 1
+    assert int(g.transfer_id[p]) == 101
+    assert g.n_edges == 5 + 2  # 5 survivors + 2 appends (100 compacted in)
+
+
 def test_rebuild_preserves_queries_and_node_ids() -> None:
     rng = np.random.default_rng(11)
     accts = [f"A{i:02d}" for i in range(10)]

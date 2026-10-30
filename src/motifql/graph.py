@@ -311,6 +311,11 @@ class TemporalGraph:
         positions (transfer_ids stay put), so use the returned position
         promptly.
         """
+        # Rebuild first: it compacts and renumbers, so a position taken
+        # before it would be stale on return (wrong anchor, or out of
+        # range). The new edge always lands in fresh overflow.
+        if self._appended >= self.rebuild_threshold:
+            self.rebuild()
         if self._n_edges >= 2**32:
             raise ValueError("edge count exceeds uint32 adjacency")
         if self._n_edges == len(self._times):
@@ -327,8 +332,6 @@ class TemporalGraph:
         _ov_insert(self._ov_out, f, int(timestamp), p)
         _ov_insert(self._ov_in, t, int(timestamp), p)
         self._appended += 1
-        if self._appended >= self.rebuild_threshold:
-            self.rebuild()
         return p
 
     def _intern(self, key: str) -> int:
