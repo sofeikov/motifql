@@ -22,5 +22,6 @@ package = false
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.14",
     "pytest>=9.1.1",
 ]

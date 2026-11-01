@@ -291,10 +291,19 @@ def test_crisp_scatter_sum_balance() -> None:
 def test_crisp_safety_predicates() -> None:
     from motifql.degrees import crisp_binary_safe as bsafe
     from motifql.degrees import crisp_differential_safe as dsafe
-    from motifql.parser import Comparison, Not, Num, Quantified, Ref
+    from motifql.parser import (
+        AmountConsCond, Comparison, GapTermCond, IsTerm, Not, Num, Pct,
+        Quantified, Ref,
+    )
     leaf = Comparison(">=", Ref(("e", "amount")), Num(1.0))
     assert bsafe(leaf) and dsafe(leaf)
     assert bsafe(Not(leaf)) and not dsafe(Not(leaf))
+    # A negated leaf is strong negation: still binary, but outside the
+    # differential (crisp reads 1 below the cut, fuzzy stays graded).
+    neg = IsTerm(Ref(("e", "gap")), True, "soon", ())
+    assert bsafe(neg) and not dsafe(neg)
+    assert not dsafe(GapTermCond("e", "soon", (), True))
+    assert not dsafe(AmountConsCond("e", Pct(0.2), True))
     for q in ("each", "all", "some", "at_least:2", "all_but:1"):
         n = Quantified(q, "e", leaf)
         assert bsafe(n) and dsafe(n), q
