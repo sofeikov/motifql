@@ -88,8 +88,39 @@ Shared terms are copied, not mutated: the fit introduces a private
 
 ## 6. Status
 
-- [ ] Fit run (seed 24, 30 tries) on HI-Small train
-- [ ] Train confirm (winner + baseline, full train)
-- [ ] Sealed holdout report (once)
-- [ ] LI-Small report (once)
-- [ ] Transfer verdict + dated report section
+- [x] Fit run (seed 24, 30 tries) on HI-Small train
+- [x] Train confirm (winner + baseline, full train — every try is full-train under §7)
+- [x] Sealed holdout report (once)
+- [x] LI-Small report (once)
+- [x] Transfer verdict + dated report section ([report](2026-11-08-issue24-report.md): negative)
+
+## 7. Amendment (Nov 8, pre-fit): recall objective flat at ceiling
+
+Slope probes on HI-Small train (before any fit) killed the §3
+objective. A full-train default replay reproduces Nov 1 exactly: 8/9
+CYCLE instances caught (128 structural at 0.0), and all 18 scoring
+member anchors already rank top-100/day (hits@50=17, @100=18 of max
+18). Train budget-recall is at ceiling under the hand-tuned default —
+no vector can score higher, so the §3 objective cannot discriminate
+(the 20k-sample slope check confirmed: narrow=2, everything else tied
+4–6; a 200k sample stayed tied 15-15-15-15 with near-zero bg mass).
+
+Replacement objective (same budget/seed/protocol, fitted before any
+holdout look): **constrained precision on full train** — minimize
+background fires/day at the fitted emit subject to keeping all 8
+catchable train CYCLE instances caught (max-member ≥ fitted emit),
+ties broken by truth margin (min instance-max − emit), then support
+width. Full-train replay takes ~1s/vector, so every try evaluates on
+all 1.86M train anchors — no sampling, no scaled budgets. The
+hand-tuned + emit-sweep baseline ({0.3…0.7} on default scores) is the
+bar the fitted vector must beat; beating unswept default alone does
+not count. Precision-side evidence from the same probes: tightening
+to {plateau 12, support 80, tol 12} drops 8/9→3/9 instances (30→11
+fires/day), loosening to {48, 150, 35} keeps 8/9 at 60 fires/day —
+the frontier is sharp, and search explores the combinations the
+one-at-a-time sweep cannot.
+
+Verdict rules (§5) carry over with "hits" replaced by "fires/day at
+fixed 8/9 (train) / 3/3 (holdout)": transfer holds iff fitted beats
+the swept baseline on holdout fires/day at full catches with LI
+agreeing in sign.

@@ -9,15 +9,21 @@ structure is frozen — only numeric params move.
 
 Two modes (the protocol in `docs/2026-11-08-issue24-prereg.md`):
 
-* `fit`: sample `tries` vectors (seeded), replay each on the train eval
-  set (all target-pattern member anchors + a seeded background sample),
-  record the full trace, then confirm the winner and the hand-tuned
-  baseline on ALL train anchors with unscaled budgets.
+* `fit`: sample `tries` vectors (seeded) and record the full trace.
+  Recall objective (default): replay each on the train eval set (all
+  target-pattern member anchors + a seeded background sample), then
+  confirm winner + baseline on ALL train anchors with unscaled
+  budgets. Precision objective (`--objective precision`, the amended
+  prereg §7): replay each on ALL train anchors, minimize background
+  fires/day at the fitted emit subject to keeping every catchable
+  train target instance caught.
 * `report`: replay frozen params (`--params fitted.json`) once on a
   sealed split (holdout or LI-Small) — no search, no peeking.
 
 Usage:
     uv run eval/calibrate.py --mode fit --data data/hi-small --workers 16
+    uv run eval/calibrate.py --mode fit --data data/hi-small --workers 16 \\
+        --objective precision --out eval/results/calibrate_round_trip_prec
     uv run eval/calibrate.py --mode report --data data/hi-small \\
         --params eval/results/calibrate_round_trip/fitted.json
     uv run eval/calibrate.py --mode report --data data/li-small \\
@@ -120,6 +126,48 @@ def pick_winner(rows: list[dict]) -> dict:
     return max(rows, key=lambda r: (r["objective"], r["width"]))
 
 
+def precision_numbers(top: np.ndarray, anchor_tids: np.ndarray,
+                      inst_members: dict[int, list[int]], emit: float,
+                      bg_mask: np.ndarray) -> dict:
+    """Constrained-precision numbers for one full-train replay.
+
+    `inst_members` maps each train target instance to its member
+    transfer_ids; `bg_mask` flags anchors that are NOT target-pattern
+    transfers. Returns instances caught at `emit`, background fires,
+    and the truth margin (worst caught instance-max minus emit: how
+    solidly the catches clear the threshold; -inf when nothing is
+    caught). The margin runs over caught instances only — a
+    structurally uncatchable instance (round_trip's 128, always 0)
+    would otherwise pin every vector's margin at -emit.
+    """
+    order = np.argsort(anchor_tids)
+    ranked = anchor_tids[order]
+    scored = top[order]
+
+    def member_max(tids: list[int]) -> float:
+        idx = np.searchsorted(ranked, np.array(tids))
+        return float(scored[idx].max())
+
+    maxima = {i: member_max(t) for i, t in inst_members.items()}
+    caught = sum(1 for m in maxima.values() if m >= emit)
+    held = [m - emit for m in maxima.values() if m >= emit]
+    margin = min(held) if held else float("-inf")
+    return {"caught": caught, "bg_fires": int(((top >= emit) & bg_mask).sum()),
+            "margin": margin, "n_target_instances": len(maxima)}
+
+
+def pick_precision_winner(rows: list[dict], baseline_caught: int) -> dict:
+    """Best precision trace row: fewest bg fires among vectors that keep
+    every baseline-caught instance caught; ties toward larger truth
+    margin, then wider supports. When nothing is feasible the least-bad
+    row still returns (highest caught, then fewest fires) — the caller
+    must check the `feasible` flag before claiming a win."""
+    for r in rows:
+        r["feasible"] = r["caught"] >= baseline_caught
+    return max(rows, key=lambda r: (r["feasible"], r["caught"],
+                                    -r["bg_fires"], r["margin"], r["width"]))
+
+
 def _replay_params(graph: TemporalGraph, positions: np.ndarray, doc,
                    motif: str, params: dict, workers: int,
                    label: str) -> tuple[np.ndarray, np.ndarray]:
@@ -134,8 +182,13 @@ def _replay_params(graph: TemporalGraph, positions: np.ndarray, doc,
 
 def run_fit(data: Path, motif: str, tries: int, seed: int, budgets: list[int],
             bg_n: int, workers: int, out: Path,
-            max_anchors: int = 0) -> dict:
+            max_anchors: int = 0, objective: str = "recall") -> dict:
     """Train-only random search + full-train confirm. Returns the summary."""
+    if objective == "precision":
+        return _run_fit_precision(data, motif, tries, seed, workers, out,
+                                  max_anchors)
+    if objective != "recall":
+        raise ValueError(f"objective {objective!r}: use recall or precision")
     target = cal.TARGET_PATTERN[motif]
     out.mkdir(parents=True, exist_ok=True)
     (out / "scores").mkdir(exist_ok=True)
@@ -291,6 +344,156 @@ def run_fit(data: Path, motif: str, tries: int, seed: int, budgets: list[int],
             "winner_obj": winner["objective"]}
 
 
+def _run_fit_precision(data: Path, motif: str, tries: int, seed: int,
+                       workers: int, out: Path, max_anchors: int = 0) -> dict:
+    """Constrained-precision fit on ALL train anchors (amended prereg §7).
+
+    Every try replays the full train split (path replay runs ~1M
+    anchors/minute, so no sampling is needed) and records instances
+    caught + background fires at the fitted emit. The winner keeps
+    every baseline-caught instance with the fewest bg fires. The bar
+    is the hand-tuned + emit-sweep baseline, not unswept default.
+    """
+    target = cal.TARGET_PATTERN[motif]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "scores").mkdir(exist_ok=True)
+
+    log.info("[1/4] loading transfers and building graph (queries look back)")
+    df = pl.read_parquet(data / "transfers.parquet")
+    graph = TemporalGraph.from_transfers(df)
+    days = df.get_column("day").to_numpy()
+    tids = df.get_column("transfer_id").to_numpy()
+    train_pos = np.flatnonzero(
+        (days >= np.datetime64(str(splits.TRAIN_START)))
+        & (days <= np.datetime64(str(splits.TRAIN_END))))
+    if max_anchors > 0:
+        train_pos = train_pos[:max_anchors]
+    n_tr_days = (splits.TRAIN_END - splits.TRAIN_START).days + 1
+    train_ids = tids[train_pos]
+    log.info("  graph edges: %d, train anchors: %d", graph.n_edges,
+             len(train_pos))
+
+    memb = pl.read_parquet(data / "pattern_members.parquet")
+    inst = splits.assign_instance_splits(
+        pl.read_parquet(data / "pattern_instances.parquet"), memb, df)
+    tgt_inst = inst.filter((pl.col("split") == "train")
+                           & (pl.col("pattern_type") == target))
+    inst_members = {row["instance_id"]: row["transfer_id"] for row in
+                    (memb.join(tgt_inst.select("instance_id"), on="instance_id")
+                     .group_by("instance_id").agg("transfer_id")
+                     .iter_rows(named=True))}
+    log.info("  train %s instances: %d", target, len(inst_members))
+    frame = build_eval_frame(df, memb, inst, train_ids)
+    bg_mask = (frame["pattern_type"].to_numpy() != target)
+
+    base_doc = parse_file(MOTIF_FILE)
+    (out / "run.json").write_text(json.dumps(
+        {"motif": motif, "target": target, "seed": seed, "tries": tries,
+         "objective": "precision", "space_version": cal.SPACE_VERSION,
+         "train_days": [str(splits.TRAIN_START), str(splits.TRAIN_END)]},
+        indent=2))
+
+    param_rng = np.random.default_rng([seed, PARAM_SEED_TAG])
+    planned = [cal.sample_params(motif, param_rng) for _ in range(tries)]
+    trace_path = out / "trace.csv"
+    cached: set[int] = set()
+    if trace_path.exists():
+        old = pl.read_csv(trace_path)
+        for row in old.iter_rows(named=True):
+            i = int(row["try"])
+            if row["is_baseline"] or (out / "scores" / f"try_{i:03d}.parquet").exists():
+                cached.add(i)
+        log.info("  resume: %d/%d tries cached",
+                 len([k for k in cached if k >= 0]), tries)
+
+    def _numbers(params: dict, try_idx: int, label: str) -> tuple[dict, np.ndarray]:
+        sp = out / "scores" / f"try_{try_idx:03d}.parquet"
+        if try_idx in cached and sp.exists():
+            top = pl.read_parquet(sp).get_column("top_score").to_numpy()
+        else:
+            top, _ = _replay_params(graph, train_pos, base_doc, motif, params,
+                                    workers, label)
+            if try_idx >= 0:
+                pl.DataFrame({"transfer_id": train_ids, "top_score": top}
+                             ).write_parquet(sp)
+        nums = precision_numbers(top, train_ids, inst_members,
+                                 float(params["emit"]), bg_mask)
+        nums["bg_per_day"] = nums["bg_fires"] / n_tr_days
+        return nums, top
+
+    log.info("[2/4] replaying baseline + %d tries on full train", tries)
+    rows: list[dict] = []
+    base_params = cal.default_params(motif)
+    base_nums, base_top = _numbers(base_params, -1, f"{motif} baseline")
+    base_caught = base_nums["caught"]
+    rows.append({"try": -1, "is_baseline": True, **base_params, **base_nums,
+                 "width": cal.width_score(motif, base_params)})
+    log.info("  baseline: caught %d/%d bg_fires %d (%.1f/day) margin %.3f",
+             base_caught, base_nums["n_target_instances"], base_nums["bg_fires"],
+             base_nums["bg_per_day"], base_nums["margin"])
+    for i, params in enumerate(planned):
+        if i in cached:
+            row = pl.read_csv(trace_path).filter(
+                (pl.col("try") == i) & ~pl.col("is_baseline")).row(0, named=True)
+            rows.append({"try": i, "is_baseline": False,
+                         **{k: params[k] for k in base_params},
+                         "caught": int(row["caught"]),
+                         "bg_fires": int(row["bg_fires"]),
+                         "bg_per_day": float(row["bg_per_day"]),
+                         "margin": float(row["margin"]),
+                         "n_target_instances": int(row["n_target_instances"]),
+                         "width": cal.width_score(motif, params)})
+            continue
+        nums, _ = _numbers(params, i, f"{motif} try {i + 1}/{tries}")
+        rows.append({"try": i, "is_baseline": False, **params, **nums,
+                     "width": cal.width_score(motif, params)})
+        if (i + 1) % 5 == 0 or i + 1 == tries:
+            pl.from_dicts(rows).write_csv(trace_path)
+        log.info("  try %d: caught %d bg_fires %d (%.1f/day) margin %.3f",
+                 i, nums["caught"], nums["bg_fires"], nums["bg_per_day"],
+                 nums["margin"])
+    pl.from_dicts(rows).write_csv(trace_path)
+
+    winner = pick_precision_winner([r for r in rows if not r["is_baseline"]],
+                                   base_caught)
+    w_params = {k: winner[k] for k in base_params}
+    log.info("[3/4] winner try %d: caught %d bg_fires %d (%.1f/day) "
+             "feasible=%s (baseline %d caught, %d fires)", winner["try"],
+             winner["caught"], winner["bg_fires"], winner["bg_per_day"],
+             winner["feasible"], base_caught, base_nums["bg_fires"])
+    (out / "fitted.json").write_text(json.dumps(
+        {"motif": motif, "params": w_params, "try": winner["try"],
+         "feasible": bool(winner["feasible"]),
+         "train_caught": winner["caught"], "train_bg_fires": winner["bg_fires"],
+         "baseline_caught": base_caught,
+         "baseline_bg_fires": base_nums["bg_fires"],
+         "seed": seed, "space_version": cal.SPACE_VERSION}, indent=2))
+    (out / f"fitted_{motif}.motif").write_text(
+        cal.render_fitted_file(motif, w_params,
+                               meta=f"seed {seed} try {winner['try']}"))
+
+    log.info("[4/4] emit-sweep baseline on default scores (the bar)")
+    summary = [{"key": "hand_tuned", "emit": float(base_params["emit"]),
+                "caught": base_caught, "bg_fires": base_nums["bg_fires"],
+                "bg_per_day": base_nums["bg_per_day"]},
+               {"key": "fitted", "emit": float(w_params["emit"]),
+                "caught": winner["caught"], "bg_fires": winner["bg_fires"],
+                "bg_per_day": winner["bg_per_day"]}]
+    for t in (0.3, 0.4, 0.5, 0.6, 0.7):
+        nums = precision_numbers(base_top, train_ids, inst_members, t, bg_mask)
+        summary.append({"key": f"sweep_emit_{t:g}", "emit": t,
+                        "caught": nums["caught"], "bg_fires": nums["bg_fires"],
+                        "bg_per_day": nums["bg_fires"] / n_tr_days})
+        log.info("  emit %.1f: caught %d bg_fires %d (%.1f/day)", t,
+                 nums["caught"], nums["bg_fires"], nums["bg_fires"] / n_tr_days)
+    pl.from_dicts(summary).write_csv(out / "confirm_train_summary.csv")
+    log.info("  wrote %s", out)
+    return {"winner_try": winner["try"], "params": w_params,
+            "feasible": bool(winner["feasible"]),
+            "baseline_fires": base_nums["bg_fires"],
+            "winner_fires": winner["bg_fires"]}
+
+
 def run_report(data: Path, params_path: Path, split: str, budgets: list[int],
                workers: int, out: Path) -> dict:
     """Replay frozen params once on a sealed split (no search)."""
@@ -360,6 +563,7 @@ def main(
     motif: Annotated[str, typer.Option(help="Motif to fit (fit mode).")] = "round_trip",
     tries: Annotated[int, typer.Option(help="Random-search vectors (fit mode).")] = 30,
     seed: Annotated[int, typer.Option(help="Seed for sampling + search.")] = 24,
+    objective: Annotated[str, typer.Option(help="Fit objective: recall or precision.")] = "recall",
     budgets: Annotated[str, typer.Option(help="Alerts/day budgets, comma-separated.")] = "50,100",
     bg_n: Annotated[int, typer.Option(help="Background sample in the train eval set.")] = 20000,
     workers: Annotated[int, typer.Option(help="Worker processes (1 = serial).")] = 16,
@@ -373,8 +577,10 @@ def main(
     if mode == "fit":
         if motif not in cal.DEFAULTS:
             raise SystemExit(f"--motif {motif!r}: choose from {sorted(cal.DEFAULTS)}")
+        if objective not in ("recall", "precision"):
+            raise SystemExit(f"--objective {objective!r}: use recall or precision")
         run_fit(data, motif, tries, seed, budget_list, bg_n, workers, out,
-                max_anchors)
+                max_anchors, objective)
     elif mode == "report":
         if params is None:
             raise SystemExit("--params fitted.json is required in report mode")
