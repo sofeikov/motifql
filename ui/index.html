@@ -193,6 +193,22 @@
   #caption .dim { color: var(--dim); }
   #stage { flex: 1; min-height: 0; }
   #stage svg { width: 100%; height: 100%; display: block; }
+  #narrative {
+    padding: 8px 24px 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--dim);
+    max-width: 900px;
+  }
+  #narrative[hidden] { display: none; }
+  #narrative p { margin: 0 0 4px; }
+  #narrative .weakest {
+    color: var(--amber);
+    font-weight: 700;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
+  }
   #transport {
     display: flex;
     align-items: center;
@@ -355,6 +371,7 @@
     </div>
     <div id="caption"><span class="dim">Press Scripted demo — or describe a pattern and compile it.</span></div>
     <div id="stage"><svg id="graph" role="img" aria-label="Witness graph"></svg></div>
+    <div id="narrative" hidden></div>
     <div class="legend">
       <span><i></i><em id="legend-done">traced hop</em></span>
       <span><i class="active"></i>playing now</span>

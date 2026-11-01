@@ -38,10 +38,13 @@ threshold (`emit`). Badge meanings: *live* = just compiled,
 The witness plays hop by hop on train CYCLE instance 102
 (score 0.718, FIRES): each hop draws in amber with its amount and
 gap, the caption narrates from → to, and the *Why this score* bars
-show both conditions holding (gap 0.841, amount 0.718). End frame:
+show both conditions holding (gap 0.841, amount 0.718). Under the
+stage, the investigator narrative retells the witness in one
+paragraph with the weakest step badged (hop 3 — committed for the
+scripted take, model-written for live compiles). End frame:
 the closed triangle, "Trace complete — 3 hops, span 2.9d".
 Scrub or step with the transport if the take needs a still;
-`?at=SECONDS` deep-links any moment (total 5.6s).
+`?at=SECONDS` deep-links any moment, narrative included (total 5.6s).
 
 ## Beat 4 (optional) — live English (~20s, needs `MUSE_KEY`)
 
