@@ -131,12 +131,28 @@ function parseBootParams(search) {
   };
 }
 
+/** Chip display text: single sentence, or queries joined by a blank line. */
+function chipText(c) {
+  return Array.isArray(c.english) ? c.english.join('\n\n') : c.english;
+}
+
+/** Exact chip match for submitted text (single or composite). */
+function matchChip(text) {
+  const k = (text || '').trim();
+  return (window.__chips || []).find((c) => chipText(c).trim() === k) || null;
+}
+
+/** Grow a textarea to fit its content (no scrollbar for demo text). */
+function autosize(box) {
+  if (!box || !Number.isFinite(box.scrollHeight)) return;
+  box.style.height = 'auto';
+  box.style.height = `${box.scrollHeight}px`;
+}
+
 /** Pinned truth anchors for known demo sentences (path motifs find
  * ~nothing on the random sample, so their chips carry anchors). */
 function chipAnchorsFor(text) {
-  const chips = window.__chips || [];
-  const k = (text || '').trim();
-  const hit = chips.find((c) => c.english.trim() === k);
+  const hit = matchChip(text);
   return hit ? (hit.anchor_tids || []) : [];
 }
 
@@ -152,7 +168,8 @@ function renderChips(chips) {
     b.appendChild(label);
     b.appendChild(document.createTextNode(c.blurb));
     b.onclick = () => {
-      $('landing-english').value = c.english;
+      $('landing-english').value = chipText(c);
+      autosize($('landing-english'));
       $('landing-english').focus();
     };
     list.appendChild(b);
@@ -192,10 +209,39 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 
 const state = {
   witnesses: [], wi: 0, motif: '', compiled: false,
+  composite: null, // {unionHops, shared, groups:[{label,motif,top_score,found,explanation,verdict,witness}]}
+  compositeEvGroup: 0, // which shape the evasion sliders attack
   playing: false, t: 0, raf: 0, lastTick: 0,
   geom: null, // {nodes: Map key->{x,y}, edges: [{path, len, label}], nodeEls}
   evasion: { noise: 0, gap: 1.0, timer: 0, curve: null, seq: 0 },
 };
+
+/** True when the stage shows a unified multi-shape trace. */
+function isComposite() { return !!state.composite; }
+
+/**
+ * Union witness hop-lists into one time-ordered trace. Returns
+ * {hops, shared} where shared holds transfer_ids present in 2+
+ * lists. Pure: node-harnessable.
+ */
+function unionWitnesses(lists) {
+  const seen = new Map(); // tid -> {hop, lists}
+  (lists || []).forEach((hops) => {
+    const seenHere = new Set(); // group witnesses repeat tids across roles
+    (hops || []).forEach((h) => {
+      if (seenHere.has(h.transfer_id)) return;
+      seenHere.add(h.transfer_id);
+      const e = seen.get(h.transfer_id);
+      if (e) e.lists += 1;
+      else seen.set(h.transfer_id, { hop: h, lists: 1 });
+    });
+  });
+  const hops = [...seen.values()].map((e) => e.hop).sort(
+    (a, b) => (a.timestamp - b.timestamp) || (a.transfer_id - b.transfer_id));
+  const shared = new Set([...seen.entries()]
+    .filter(([, e]) => e.lists > 1).map(([tid]) => tid));
+  return { hops, shared };
+}
 
 function el(name, attrs, parent) {
   const e = document.createElementNS(SVGNS, name);
@@ -251,9 +297,24 @@ function enterWorkspace() {
 function backToLanding() {
   stopPlayer();
   $('landing-english').value = $('english').value;
+  autosize($('landing-english'));
   document.body.classList.remove('workspace-enter');
   document.body.classList.add('landing');
   setTimeout(() => $('landing-english').focus(), 60);
+}
+
+/** Route submitted text: composite chips run all queries at once. */
+async function submitText(text, anchors) {
+  const match = matchChip(text);
+  const tids = (anchors && anchors.length)
+    ? anchors : (match ? (match.anchor_tids || []) : []);
+  if (match && Array.isArray(match.english)) {
+    const labels = match.labels && match.labels.length === match.english.length
+      ? match.labels
+      : match.english.map((_, i) => `Shape ${i + 1}`);
+    return runComposite(match.english, labels, tids);
+  }
+  return runCompile(text, tids);
 }
 
 /** Submit the landing chat box: dive into the workspace, then compile. */
@@ -262,26 +323,61 @@ async function landingSubmit(english, anchors) {
   if (!text) return;
   $('english').value = text;
   $('landing-english').value = text;
+  autosize($('english'));
+  autosize($('landing-english'));
   await enterWorkspace();
-  await runCompile(text, anchors || []);
+  await submitText(text, anchors || []);
 }
 
 function showError(where, err) {
   $(where).innerHTML = `<div class="error-box">${esc(String(err.message || err))}</div>`;
 }
 
-function renderMotif(motif, source, attempts) {
-  $('motif-box').innerHTML = `<pre class="motif">${esc(motif)}</pre>`;
-  const badge = $('source-badge');
-  badge.hidden = false;
+function sourceLabel(source) {
   const labels = {
     model: ['live · Muse Spark', 'live'],
     cache: ['cached · Muse Spark', 'cached'],
     canned: ['scripted · Muse Spark output', 'cached'],
   };
-  const [text, cls] = labels[source] || [source, ''];
+  return labels[source] || [source, ''];
+}
+
+function renderMotif(motif, source, attempts) {
+  $('motif-box').innerHTML = `<pre class="motif">${esc(motif)}</pre>`;
+  const badge = $('source-badge');
+  badge.hidden = false;
+  const [text, cls] = sourceLabel(source);
   badge.textContent = `${text} · ${attempts} attempt${attempts === 1 ? '' : 's'}`;
   badge.className = `badge ${cls}`;
+}
+
+/** Composite motif panel: one labeled block per query group. */
+function renderMotifs(groups, labels) {
+  const box = $('motif-box');
+  box.innerHTML = '';
+  groups.forEach((g, gi) => {
+    const head = document.createElement('div');
+    head.className = 'motif-head';
+    const [text] = sourceLabel(g.source);
+    head.textContent = `${labels[gi] || `Shape ${gi + 1}`} · ${text}`;
+    box.appendChild(head);
+    if (g.compiled) {
+      const pre = document.createElement('pre');
+      pre.className = 'motif';
+      pre.textContent = g.motif;
+      box.appendChild(pre);
+    } else {
+      const err = document.createElement('div');
+      err.className = 'error-box';
+      err.textContent = `Still not compiling after ${g.attempts} attempt(s):\n${g.errors.join('\n')}`;
+      box.appendChild(err);
+    }
+  });
+  const badge = $('source-badge');
+  badge.hidden = false;
+  const attempts = groups.reduce((n, g) => n + g.attempts, 0);
+  badge.textContent = `${groups.length} queries · ${attempts} attempt${attempts === 1 ? '' : 's'}`;
+  badge.className = `badge ${sourceLabel(groups[0].source)[1]}`;
 }
 
 function renderTabs() {
@@ -298,19 +394,59 @@ function renderTabs() {
   $('witness-sec').hidden = state.witnesses.length === 0;
 }
 
+/** Composite strip: shapes firing + transfers shared across shapes. */
+function renderCompositeLine() {
+  const box = $('composite-line');
+  const c = state.composite;
+  if (!c) {
+    box.hidden = true;
+    box.textContent = '';
+    return;
+  }
+  const firing = c.groups.filter((g) => g.found).length;
+  const n = c.shared.size;
+  const firstW = c.groups.map((g) => g.witness).find((w) => w && w.length);
+  const anchor = firstW ? firstW[firstW.length - 1].transfer_id : null;
+  box.hidden = false;
+  box.innerHTML = `<span class="dim">${firing}/${c.groups.length} shapes fire` +
+    (anchor !== null ? ` on transfer #${anchor}` : '') +
+    ` · </span><span class="amt">${n} shared transfer${n === 1 ? '' : 's'}</span>` +
+    `<span class="dim"> link${n === 1 ? 's' : ''} the shapes</span>`;
+}
+
+function degRow(e) {
+  const row = document.createElement('div');
+  row.className = 'deg-row';
+  const pct = Math.max(0, Math.min(1, e.degree)) * 100;
+  row.innerHTML = `<div class="label" title="${esc(e.predicate)}">${esc(e.predicate)}</div>
+    <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+    <div class="sub">${e.degree.toFixed(3)}${e.step ? ` · weakest at hop ${e.step}` : ''}</div>`;
+  return row;
+}
+
 function renderDegrees(w) {
   const box = $('degrees');
   box.innerHTML = '';
-  (w.explanation || []).forEach((e) => {
-    const row = document.createElement('div');
-    row.className = 'deg-row';
-    const pct = Math.max(0, Math.min(1, e.degree)) * 100;
-    row.innerHTML = `<div class="label" title="${esc(e.predicate)}">${esc(e.predicate)}</div>
-      <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>
-      <div class="sub">${e.degree.toFixed(3)}${e.step ? ` · weakest at hop ${e.step}` : ''}</div>`;
-    box.appendChild(row);
-  });
+  (w.explanation || []).forEach((e) => box.appendChild(degRow(e)));
   $('degrees-sec').hidden = (w.explanation || []).length === 0;
+}
+
+/** Composite degrees: each shape's bars under its own subhead. */
+function renderDegreesComposite(overrides) {
+  const box = $('degrees');
+  box.innerHTML = '';
+  let rows = 0;
+  state.composite.groups.forEach((g, gi) => {
+    const expl = (overrides && overrides[gi]) || g.explanation || [];
+    if (!expl.length) return;
+    const head = document.createElement('div');
+    head.className = 'deg-group';
+    head.textContent = `${g.label} · ${g.top_score.toFixed(3)}`;
+    box.appendChild(head);
+    expl.forEach((e) => box.appendChild(degRow(e)));
+    rows += expl.length;
+  });
+  $('degrees-sec').hidden = rows === 0;
 }
 
 /** Verdict lede + narrative paragraph HTML (pure: node-harnessable). */
@@ -347,6 +483,35 @@ function renderScore(w) {
   const trunc = w.truncated ? ' · truncated' : '';
   $('score-meta').textContent =
     `${hops.length} ${unitWord}${hops.length === 1 ? '' : 's'} · span ${span} · anchor #${hops.length ? hops[hops.length - 1].transfer_id : '–'}${exp}${trunc}`;
+}
+
+/** Composite score line: firing count big, per-shape scores in meta. */
+function renderScoreComposite() {
+  const c = state.composite;
+  $('score-line').hidden = false;
+  const firing = c.groups.filter((g) => g.found).length;
+  $('score-val').textContent = `${firing}/${c.groups.length}`;
+  const v = $('verdict');
+  v.textContent = 'composite';
+  v.className = `verdict ${firing === c.groups.length && c.groups.length ? 'fires' : 'quiet'}`;
+  const perShape = c.groups.map((g) => `${g.label} ${g.top_score.toFixed(3)}`).join(' · ');
+  const firstW = c.groups.map((g) => g.witness).find((w) => w && w.length);
+  const anchor = firstW ? firstW[firstW.length - 1].transfer_id : null;
+  $('score-meta').textContent =
+    `${perShape} · ${c.unionHops.length} transfers` +
+    (anchor !== null ? ` · anchor #${anchor}` : '');
+}
+
+/** Composite narrative: unified diagnosis first, shape verdicts after. */
+function renderNarrativeComposite() {
+  const box = $('narrative');
+  const c = state.composite;
+  let html = c.diagnosis ? `<p class="lede">${esc(c.diagnosis)}</p>` : '';
+  html += c.groups
+    .filter((g) => g.verdict)
+    .map((g) => `<p><b>${esc(g.label)}:</b> ${esc(g.verdict)}</p>`).join('');
+  box.hidden = !html;
+  box.innerHTML = html;
 }
 
 function edgeCurve(x1, y1, x2, y2, cx, cy, closed) {
@@ -402,14 +567,69 @@ function buildSVG(w) {
   const gE = el('g', {}, svg);
   const gL = el('g', {}, svg);
   const gN = el('g', {}, svg);
+  const shared = (state.composite && state.composite.shared) || new Set();
+  // Same-pair census: duplicate transfers would draw identical curves
+  // with stacked labels, so parallels bow apart and labels stagger.
+  const pairTotal = new Map();
+  hops.forEach((h) => {
+    const k = acctKey(h, 'from') + '>' + acctKey(h, 'to');
+    pairTotal.set(k, (pairTotal.get(k) || 0) + 1);
+  });
+  // Column slots: same-column edges skipping nodes must bow around them.
+  const slotOf = new Map();
+  if (group) {
+    const byCol = new Map();
+    nodes.forEach((n) => {
+      if (!byCol.has(n.col)) byCol.set(n.col, []);
+      byCol.get(n.col).push(n);
+    });
+    byCol.forEach((col) => {
+      col.sort((p, q) => p.y - q.y).forEach((n, s) => slotOf.set(n.key, s));
+    });
+  }
+  const pairSeen = new Map();
   const edges = hops.map((h, i) => {
     const a = at.get(acctKey(h, 'from')), b = at.get(acctKey(h, 'to'));
     const [x1, y1, x2, y2] = shortenEdge(a.x, a.y, b.x, b.y, NR);
-    const d = group
-      ? `M ${x1} ${y1} C ${x1 + (x2 - x1) * 0.45} ${y1}, ${x2 - (x2 - x1) * 0.45} ${y2}, ${x2} ${y2}`
-      : edgeCurve(x1, y1, x2, y2, cx, cy, closed);
+    const pk = acctKey(h, 'from') + '>' + acctKey(h, 'to');
+    const pi = pairSeen.get(pk) || 0;
+    pairSeen.set(pk, pi + 1);
+    const spread = group ? pi - ((pairTotal.get(pk) || 1) - 1) / 2 : 0;
+    let nx = -(y2 - y1), ny = (x2 - x1);
+    const nl = Math.hypot(nx, ny);
+    if (nl < 1) { nx = 1; ny = 0; } else { nx /= nl; ny /= nl; }
+    let d;
+    if (!group) {
+      d = edgeCurve(x1, y1, x2, y2, cx, cy, closed);
+    } else if (Math.hypot(x2 - x1, y2 - y1) < 1) {
+      // Self-loop, rim-anchored (shortenEdge no-ops at the center):
+      // exits top, bulges sideways, re-enters upper rim.
+      const s = spread === 0 ? 1 : Math.sign(spread);
+      const r = 30 * (1 + Math.abs(spread) * 0.35);
+      const x0 = x1 + s * NR * 0.55, y0 = y1 - NR * 0.85;
+      const x3 = x1 + s * NR * 0.95, y3 = y1 - NR * 0.15;
+      d = `M ${x0} ${y0} C ${x0 + s * r} ${y0 - 22}, ` +
+        `${x3 + s * (r + 8)} ${y3 - 12}, ${x3} ${y3}`;
+    } else {
+      const bow = spread * 14;
+      let sideX = 0;
+      const fk = acctKey(h, 'from'), tk = acctKey(h, 'to');
+      const fa = at.get(fk), ta = at.get(tk);
+      if (fa && ta && fa.col === ta.col &&
+          Math.abs((slotOf.get(fk) || 0) - (slotOf.get(tk) || 0)) > 1) {
+        sideX = -(30 + 25 * Math.abs(slotOf.get(fk) - slotOf.get(tk)));
+      }
+      const c1x = x1 + (x2 - x1) * 0.45 + nx * bow + sideX;
+      const c1y = y1 + ny * bow;
+      const c2x = x2 - (x2 - x1) * 0.45 + nx * bow + sideX;
+      const c2y = y2 + ny * bow;
+      d = `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`;
+    }
+    const stack = `translate(${nx * spread * 18} ${ny * spread * 18})`;
+    const isShared = shared.has(h.transfer_id);
     const path = el('path', {
-      d, fill: 'none', stroke: colors.todo, 'stroke-width': 2.5,
+      d, fill: 'none', stroke: colors.todo,
+      'stroke-width': isShared ? 4.5 : 2.5,
       'stroke-dasharray': '5 6', 'marker-end': 'url(#arr-todo)',
       'stroke-linecap': 'round',
     }, gE);
@@ -431,7 +651,7 @@ function buildSVG(w) {
       bx = mid.x + nx * 24;
       by = mid.y + ny * 24;
     }
-    const lab = el('g', { opacity: 0 }, gL);
+    const lab = el('g', { opacity: 0, transform: stack }, gL);
     const halo = {
       'text-anchor': 'middle', 'font-family': 'ui-monospace, Menlo, monospace',
       stroke: '#0b0e13', 'stroke-width': 4, 'paint-order': 'stroke',
@@ -449,7 +669,7 @@ function buildSVG(w) {
     // order); the dots would land on neighbouring labels.
     let badge = null;
     if (!group || hops.length <= 8) {
-      badge = el('g', { opacity: 0 }, gL);
+      badge = el('g', { opacity: 0, transform: stack }, gL);
       el('circle', { cx: bx, cy: by, r: 10, fill: '#f0b429' }, badge);
       el('text', {
         x: bx, y: by + 4, 'text-anchor': 'middle',
@@ -564,6 +784,7 @@ function renderFrame(t) {
   });
   // caption: current member, or the summary at the ends
   const cap = $('caption');
+  const shared = (state.composite && state.composite.shared) || new Set();
   const cur = hops.findIndex((_, i) => t < hopStart(i, g.unit) + g.unit);
   if (t < INTRO || !hops.length) {
     cap.innerHTML = `<span class="dim">${hops.length ? 'Tracing the money…' : 'No members in this witness.'}</span>`;
@@ -572,15 +793,20 @@ function renderFrame(t) {
       ? fmtGap(hops[hops.length - 1].timestamp - hops[0].timestamp) : '–';
     const mids = group && g.mids > 0 ? `, ${g.mids} intermediaries` : '';
     const units = group ? 'members' : 'hops';
-    cap.innerHTML = `<span class="dim">Trace complete — ${hops.length} ${units}${mids}, span ${span}, ` +
-      `score <span class="amt">${w.top_score.toFixed(3)}</span></span>`;
+    const link = shared.size
+      ? `, <span class="amt">${shared.size}</span> in both shapes` : '';
+    const scoreBit = isComposite() ? '' :
+      `, score <span class="amt">${w.top_score.toFixed(3)}</span>`;
+    cap.innerHTML = `<span class="dim">Trace complete — ${hops.length} ${units}${mids}, span ${span}${link}${scoreBit}</span>`;
   } else {
     const h = hops[cur];
     const gap = !group && cur > 0 ? h.timestamp - hops[cur - 1].timestamp : null;
+    const link = shared.has(h.transfer_id)
+      ? ` · <span class="amt">in both shapes</span>` : '';
     cap.innerHTML = `<span class="hop-no">${unitWord} ${cur + 1}/${hops.length}</span> ` +
       `<span class="dim">${esc(acctKey(h, 'from'))} → ${esc(acctKey(h, 'to'))}</span> · ` +
       `<span class="amt">${fmtMoney(h.amount)}</span> ` +
-      `<span class="dim">${fmtTime(h.timestamp)}${gap !== null ? ` · Δ${fmtGap(gap)} since last` : ''}</span>`;
+      `<span class="dim">${fmtTime(h.timestamp)}${gap !== null ? ` · Δ${fmtGap(gap)} since last` : ''}</span>${link}`;
   }
   $('fill').style.width = `${Math.max(0, Math.min(1, t / g.dur)) * 100}%`;
   $('clock').textContent = `${t.toFixed(1)}s / ${g.dur.toFixed(1)}s`;
@@ -642,7 +868,11 @@ function renderEvasion(d, source) {
     `${Math.max(0, Math.min(1, d.fuzzy_top)) * 100}%`;
   $('ev-crisp-fill').style.width =
     `${Math.max(0, Math.min(1, d.crisp_top)) * 100}%`;
-  renderDegrees({ explanation: d.explanation || [] });
+  if (isComposite()) {
+    renderDegreesComposite({ [state.compositeEvGroup]: d.explanation || [] });
+  } else {
+    renderDegrees({ explanation: d.explanation || [] });
+  }
   $('evasion-caption').innerHTML = formatEvasionCaption(
     state.evasion.noise, state.evasion.gap,
     d.baseline_fuzzy, d.fuzzy_top, d.baseline_crisp, d.crisp_top);
@@ -653,15 +883,19 @@ function renderEvasion(d, source) {
 }
 
 async function updateEvasion() {
-  const w = state.witnesses[state.wi];
-  if (!w || !(w.witness || []).length || !state.motif) return;
+  // Composite mode attacks the toggled shape's own witness and motif.
+  const compGroup = isComposite()
+    ? state.composite.groups[state.compositeEvGroup] : null;
+  const w = compGroup || state.witnesses[state.wi];
+  const motif = compGroup ? compGroup.motif : state.motif;
+  if (!w || !(w.witness || []).length || !motif) return;
   const anchor = w.witness[w.witness.length - 1].transfer_id;
   const my = ++state.evasion.seq;
   evasionLabels();
   let data = null, source = 'live';
   try {
     const res = await api('/perturb', {
-      motif_text: state.motif, anchor_tids: [anchor],
+      motif_text: motif, anchor_tids: [anchor],
       amount_noise_pct: state.evasion.noise / 100,
       gap_scale: state.evasion.gap, seed: EVASION_SEED,
     });
@@ -695,6 +929,8 @@ function selectWitness(i, autoplay) {
   stopPlayer();
   state.wi = i;
   const w = state.witnesses[i];
+  $('legend-shared').hidden = true;
+  renderEvShapeToggle(); // hides itself outside composite mode
   renderTabs();
   renderDegrees(w);
   renderScore(w);
@@ -724,10 +960,74 @@ function selectWitness(i, autoplay) {
   if (autoplay && params.autoplay) play(true);
 }
 
+/** Composite selection: one unified trace over the union of shapes. */
+function selectComposite(autoplay) {
+  stopPlayer();
+  const c = state.composite;
+  state.witnesses = [{ witness: c.unionHops, top_score: 0, explanation: [] }];
+  state.wi = 0;
+  state.motif = (c.groups[state.compositeEvGroup] || {}).motif || '';
+  $('witness-sec').hidden = true;
+  $('legend-shared').hidden = c.shared.size === 0;
+  renderScoreComposite();
+  renderDegreesComposite({});
+  renderNarrativeComposite();
+  renderCompositeLine();
+  renderEvShapeToggle();
+  state.geom = buildSVG(state.witnesses[0]);
+  state.t = 0;
+  $('legend-done').textContent =
+    state.geom && state.geom.kind === 'group' ? 'traced member' : 'traced hop';
+  $('evasion').hidden = !c.unionHops.length || !state.motif;
+  if (!$('evasion').hidden) updateEvasion();
+  if (!state.geom) {
+    $('caption').innerHTML = '<span class="dim">No hops in this witness.</span>';
+    return;
+  }
+  const params = parseBootParams(location.search);
+  if (params.at !== null) {
+    state.t = Math.max(0, Math.min(state.geom.dur, params.at));
+    renderFrame(state.t);
+    return;
+  }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    state.t = state.geom.dur;
+    renderFrame(state.t);
+    return;
+  }
+  renderFrame(0);
+  if (autoplay && params.autoplay) play(true);
+}
+
+/** Evasion shape toggle (composite only): which shape the sliders attack. */
+function renderEvShapeToggle() {
+  const box = $('ev-shape');
+  box.innerHTML = '';
+  if (!isComposite()) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  state.composite.groups.forEach((g, gi) => {
+    const b = document.createElement('button');
+    b.textContent = g.label;
+    b.setAttribute('aria-selected', gi === state.compositeEvGroup ? 'true' : 'false');
+    b.onclick = () => {
+      state.compositeEvGroup = gi;
+      state.motif = g.motif || '';
+      renderEvShapeToggle();
+      updateEvasion();
+    };
+    box.appendChild(b);
+  });
+}
+
 async function runCompile(english, anchorTids) {
   if (!anchorTids || !anchorTids.length) {
     anchorTids = chipAnchorsFor(english); // demo sentences pin truth anchors
   }
+  state.composite = null;
+  $('composite-line').hidden = true;
   setBusy(true, 'Consulting Muse Spark…');
   try {
     const res = await api('/compile', {
@@ -764,6 +1064,63 @@ async function runCompile(english, anchorTids) {
     $('degrees-sec').hidden = true;
     $('narrative').hidden = true;
     $('evasion').hidden = true;
+    $('composite-line').hidden = true;
+    $('caption').innerHTML = '<span class="dim">Press Scripted demo — or describe a pattern and compile it.</span>';
+  }
+}
+
+/** Composite compile: several queries, same anchors, one unified trace. */
+async function runComposite(englishList, labels, anchorTids) {
+  state.composite = null;
+  $('composite-line').hidden = true;
+  setBusy(true, 'Consulting Muse Spark…');
+  try {
+    const res = await api('/compile', {
+      english: englishList[0], english2: englishList[1],
+      max_attempts: 3, n_witnesses: 3, anchor_tids: anchorTids || [],
+    });
+    const groups = res.groups || [];
+    renderMotifs(groups, labels);
+    const shaped = groups.map((g, gi) => {
+      const w = (g.witnesses || [])[0] || null;
+      return {
+        label: labels[gi] || `Shape ${gi + 1}`,
+        motif: g.compiled ? g.motif : '',
+        top_score: w ? w.top_score : 0,
+        found: !!(w && w.found),
+        explanation: w ? (w.explanation || []) : [],
+        verdict: w ? w.verdict : null,
+        witness: w ? (w.witness || []) : [],
+      };
+    });
+    const { hops, shared } = unionWitnesses(shaped.map((g) => g.witness));
+    state.composite = {
+      unionHops: hops, shared, groups: shaped,
+      diagnosis: res.diagnosis || null,
+    };
+    state.compositeEvGroup = 0;
+    setBusy(false);
+    if (!hops.length) {
+      const allFailed = groups.length && groups.every((g) => !g.compiled);
+      state.composite = null;
+      $('caption').innerHTML = allFailed
+        ? '<span class="dim">The model output did not compile — see errors.</span>'
+        : '<span class="dim">Compiled — but matches nothing on the sample.</span>';
+      $('witness-sec').hidden = true;
+      $('narrative').hidden = true;
+      $('evasion').hidden = true;
+      return;
+    }
+    selectComposite(true);
+  } catch (err) {
+    state.composite = null;
+    setBusy(false);
+    showError('motif-box', err);
+    $('witness-sec').hidden = true;
+    $('degrees-sec').hidden = true;
+    $('narrative').hidden = true;
+    $('evasion').hidden = true;
+    $('composite-line').hidden = true;
     $('caption').innerHTML = '<span class="dim">Press Scripted demo — or describe a pattern and compile it.</span>';
   }
 }
@@ -796,7 +1153,7 @@ async function boot() {
       ((ev.clientX - r.left) / r.width) * state.geom.dur));
     renderFrame(state.t);
   };
-  $('compile-btn').onclick = () => runCompile($('english').value, []);
+  $('compile-btn').onclick = () => submitText($('english').value, []);
   $('scripted-btn').onclick = () => runCompile(window.__demoEnglish, window.__demoAnchors);
   $('new-search-btn').onclick = backToLanding;
   $('landing-go').onclick = () => landingSubmit();
@@ -808,6 +1165,8 @@ async function boot() {
       landingSubmit();
     }
   });
+  $('landing-english').addEventListener('input', (ev) => autosize(ev.target));
+  $('english').addEventListener('input', (ev) => autosize(ev.target));
   window.__chips = [];
   renderChips([]);
   // Evasion sliders: labels + URL update instantly, re-scoring debounced.
@@ -836,6 +1195,8 @@ async function boot() {
     state.evasion.curve = cfg.evasion_curve || null;
     $('english').value = cfg.english || '';
     $('landing-english').value = cfg.english || '';
+    autosize($('english'));
+    autosize($('landing-english'));
     const dataLine = `${health.edges.toLocaleString('en-US')} transfers · ${health.motifs.length} motifs`;
     const db = $('data-badge');
     db.hidden = false;
@@ -849,6 +1210,8 @@ async function boot() {
     if (params.sentence) {
       $('english').value = params.sentence;
       $('landing-english').value = params.sentence;
+      autosize($('english'));
+      autosize($('landing-english'));
     }
     const skipLanding = !params.landing || params.at !== null;
     if (skipLanding) document.body.classList.remove('landing');
@@ -856,12 +1219,12 @@ async function boot() {
       const anchors = params.anchors.length ? params.anchors
         : window.__demoAnchors;
       if (skipLanding) {
-        await runCompile(english, anchors);
+        await submitText(english, anchors);
       } else {
         // Let the landing read on camera, then dive into the workspace.
         await new Promise((r) => setTimeout(r, 1100));
         await enterWorkspace();
-        await runCompile(english, anchors);
+        await submitText(english, anchors);
       }
     } else if (!skipLanding) {
       $('landing-english').focus();
@@ -882,7 +1245,7 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     fmtMoney, fmtGap, fmtTime, acctKey, layout, hopStart, totalDur,
-    parseBootParams, isChain, narrativeHTML,
+    parseBootParams, isChain, narrativeHTML, unionWitnesses,
     formatEvasionCaption, lookupEvasionPoint,
     HOP_DUR, MEMBER_DUR, INTRO, OUTRO, EVASION_SEED,
   };

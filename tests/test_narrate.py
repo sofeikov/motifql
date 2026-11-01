@@ -14,6 +14,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from motifql.models import narrate, spark  # noqa: E402
 
@@ -221,6 +223,42 @@ def test_summarize_happy_path_and_fail_closed() -> None:
     richer = VERDICT + " The total was $9,800."
     res = narrate.summarize(ENGLISH, MOTIF, _witness(),
                             complete=lambda m: (richer, {}))
+    assert res.text is None and any("$9,800" in i for i in res.issues)
+
+
+DIAGNOSIS = ("A round trip scoring 0.718 overlaps a group scoring 1.0: "
+              "the $990 hop also fans out among $510 transfers, so one "
+              "criminal structure fires both shapes. The weakest link is "
+              "the amount similarity at 0.718.")
+
+
+def test_diagnosis_prompt_stacks_shapes_with_shared() -> None:
+    w1, w2 = _witness(), _group_witness()
+    messages = narrate.build_diagnosis_messages(
+        [ENGLISH, "a fan"], [MOTIF, MOTIF], [w1, w2])
+    system = messages[0]["content"]
+    assert "ONE criminal structure" in system
+    assert "CANNOT NARRATE" in system
+    user = messages[1]["content"]
+    assert "SHAPE 1:" in user and "SHAPE 2:" in user
+    assert "SHARED:" in user
+    assert "$990" in user and "$510" in user  # both tables present
+    with pytest.raises(ValueError):
+        narrate.build_diagnosis_messages([ENGLISH], [MOTIF], [w1])
+
+
+def test_summarize_composite_verifies_union() -> None:
+    w1, w2 = _witness(), _group_witness()
+    res = narrate.summarize_composite(
+        [ENGLISH, "a fan"], [MOTIF, MOTIF], [w1, w2],
+        complete=lambda m: (DIAGNOSIS, {}))
+    assert res.text == DIAGNOSIS and res.issues == []
+    assert res.weakest_step is None  # hops are per-shape
+    assert res.weakest_degree == 0.718  # min across shapes
+    forged = DIAGNOSIS + " Also $9,800 moved."
+    res = narrate.summarize_composite(
+        [ENGLISH, "a fan"], [MOTIF, MOTIF], [w1, w2],
+        complete=lambda m: (forged, {}))
     assert res.text is None and any("$9,800" in i for i in res.issues)
 
 

@@ -32,7 +32,8 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 from motifql.compile_service import (  # noqa: E402
-    EVASION_SEED, CompileError, compile_english, load_canned, score_evasion)
+    EVASION_SEED, CompileError, compile_composite, compile_english,
+    load_canned, score_evasion)
 from motifql.engine import Engine, MotifResult, WitnessHop  # noqa: E402
 from motifql.models.spark import complete as spark_complete  # noqa: E402
 from motifql.proxy import ProxyError, UpstreamError, inject_and_forward  # noqa: E402
@@ -98,6 +99,7 @@ def _result_out(r: MotifResult, narrative: str | None = None,
 
 class CompileIn(BaseModel):
     english: str
+    english2: str | None = None  # set for a two-query composite compile
     max_attempts: int = 3
     n_witnesses: int = 3
     anchor_tids: list[int] = Field(default_factory=list)
@@ -155,6 +157,8 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
 
     @app.post("/compile")
     def compile(req: CompileIn) -> JSONResponse:
+        if req.english2:
+            return _compile_composite(req)
         try:
             res = compile_english(
                 req.english, engine, complete=app.state.complete_fn,
@@ -163,10 +167,14 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
                 narrate_complete=app.state.narrate_complete)
         except CompileError as e:
             return JSONResponse({"detail": str(e)}, status_code=e.status_code)
+        return JSONResponse(_group_out(res))
+
+    def _group_out(res) -> dict:
+        """One compiled query as response JSON (shared single/composite)."""
         narratives = res.narratives or [None] * len(res.witnesses)
         weakest = res.narrative_weakest or [None] * len(res.witnesses)
         verdicts = res.verdicts or [None] * len(res.witnesses)
-        return JSONResponse({
+        return {
             "motif": res.motif, "compiled": res.compiled,
             "attempts": res.attempts, "errors": res.errors,
             "source": res.source,
@@ -174,7 +182,24 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
                                       verdict=v).model_dump()
                           for w, n, s, v in zip(res.witnesses, narratives,
                                                 weakest, verdicts)],
-        })
+        }
+
+    def _compile_composite(req: CompileIn) -> JSONResponse:
+        try:
+            res = compile_composite(
+                [req.english, req.english2], engine,
+                complete=app.state.complete_fn,
+                max_attempts=req.max_attempts, n_witnesses=req.n_witnesses,
+                anchor_tids=req.anchor_tids, canned=app.state.canned,
+                narrate_complete=app.state.narrate_complete)
+        except CompileError as e:
+            return JSONResponse({"detail": str(e)}, status_code=e.status_code)
+        groups = [dict(_group_out(g), english=g.english)
+                  for g in res.groups]
+        # Top-level fields mirror group 1 (back-compat); the UI keys
+        # composite mode off `groups`.
+        return JSONResponse(dict(groups[0], groups=groups,
+                                 diagnosis=res.diagnosis))
 
     @app.post("/perturb")
     def perturb(req: PerturbIn) -> JSONResponse:

@@ -75,6 +75,33 @@ transfer to another.
 If any fact you need is missing from the table, reply with exactly: \
 CANNOT NARRATE"""
 
+DIAGNOSIS_SYSTEM = """\
+You write unified diagnoses for composite money-flow findings: 2-3 \
+plain-text sentences, no markdown, no bullets. Two shapes fired on \
+the same anchor — say what the COMBINED structure is and why it \
+matters, in the analysts' own words (see the ANALYST lines): which \
+shapes fired with their scores, how they link (the SHARED transfers \
+belong to both shapes — say what they connect, e.g. "the chain's \
+tail feeds the gather"), and the weakest link across both shapes in \
+plain words with its quoted degree. Read as ONE criminal structure, \
+not two reports.
+
+FORBIDDEN: account numbers, transfer ids, individual amounts, \
+timestamps, and predicate code names. Never write things like \
+count(...), DistinctArg, leg1, or gap is patient — translate every \
+condition into words. Describe sums qualitatively ("roughly equal"); \
+never state totals (they are not in the tables). You may quote the \
+overall scores and condition degrees (0.998) as shown.
+
+EXTRACTIVE RULES. The witness tables below are your only source of \
+facts. Take every count from the DISTINCT lines; never count members \
+by hand (transfers repeat accounts). Any figure you use must appear \
+in the tables exactly as shown. Never invent or carry a figure from \
+one transfer to another.
+
+If any fact you need is missing from the tables, reply with exactly: \
+CANNOT NARRATE"""
+
 HOP_KEYS = ("transfer_id", "timestamp", "from_bank", "from_account",
             "to_bank", "to_account", "amount")
 
@@ -234,6 +261,12 @@ def _cents(value: float) -> int:
     return int(round(float(value) * 100))
 
 
+def verify_composite(text: str, witnesses: list[dict]) -> list[str]:
+    """Extractive check over the union of composite witness hops."""
+    merged = {"hops": [h for w in witnesses for h in w.get("hops", [])]}
+    return verify_narrative(text, merged)
+
+
 def verify_narrative(text: str, witness: dict) -> list[str]:
     """Extractive check: every amount/date in `text` is in the witness.
 
@@ -353,3 +386,63 @@ def summarize(english: str, motif_text: str, witness: dict, *,
     return _complete_and_verify(messages[0]["content"], messages[1]["content"],
                                 witness, complete=complete, strict=strict,
                                 log_tag="verdict")
+
+
+def build_diagnosis_messages(english_list: list[str], motif_list: list[str],
+                             witness_list: list[dict]) -> list[dict]:
+    """System + stacked witness-table prompts for a composite finding."""
+    if not (len(english_list) == len(motif_list) == len(witness_list)):
+        raise ValueError("cannot narrate: composite inputs misaligned")
+    if len(witness_list) < 2:
+        raise ValueError("cannot narrate: composite needs 2+ witnesses")
+    for english, motif_text, witness in zip(english_list, motif_list,
+                                            witness_list):
+        issues = validate_witness(witness)
+        if issues:
+            raise ValueError(f"cannot narrate: {'; '.join(issues)}")
+        if not english.strip():
+            raise ValueError("cannot narrate: english is empty")
+        if not motif_text.strip():
+            raise ValueError("cannot narrate: motif text is empty")
+    tids = [set(h["transfer_id"] for h in w["hops"]) for w in witness_list]
+    shared = set.intersection(*tids) if tids else set()
+    tables = []
+    for i, (english, motif_text, witness) in enumerate(
+            zip(english_list, motif_list, witness_list)):
+        tables.append(f"SHAPE {i + 1}:\n"
+                      + witness_table(witness, english, motif_text))
+    tables.append(f"SHARED: {len(shared)} transfer(s) appear in "
+                  f"{len(witness_list)} shapes")
+    return [{"role": "system", "content": DIAGNOSIS_SYSTEM},
+            {"role": "user",
+             "content": "Write the unified diagnosis for this composite "
+                        "finding:\n\n" + "\n\n".join(tables)}]
+
+
+def summarize_composite(english_list: list[str], motif_list: list[str],
+                        witness_list: list[dict], *,
+                        complete=spark_complete,
+                        strict: bool = True) -> NarrateResult:
+    """Write one unified diagnosis over several shapes (fail-closed).
+
+    Amounts and dates verify against the union of witness hops; the
+    weakest link is the min-degree condition across shapes (its hop
+    number is dropped — hops are per-shape).
+    """
+    try:
+        messages = build_diagnosis_messages(english_list, motif_list,
+                                            witness_list)
+    except ValueError as exc:
+        return NarrateResult(None, issues=[str(exc)])
+    merged = {"hops": [h for w in witness_list for h in w.get("hops", [])]}
+    res = _complete_and_verify(messages[0]["content"], messages[1]["content"],
+                               merged, complete=complete, strict=strict,
+                               log_tag="diagnosis")
+    weaks = [weakest(w.get("explanation", [])) for w in witness_list]
+    weaks = [w for w in weaks if w is not None]
+    if weaks:
+        predicate, degree, _ = min(weaks, key=lambda t: t[1])
+        res.weakest_predicate = predicate
+        res.weakest_degree = degree
+    res.weakest_step = None
+    return res

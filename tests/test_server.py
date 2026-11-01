@@ -51,7 +51,7 @@ def test_demo_config_serves_chips() -> None:
     assert r.status_code == 200
     chips = r.json()["chips"]
     assert [c["key"] for c in chips] == ["cycle", "fanout", "chain",
-                                         "scatter", "gather"]
+                                         "scatter", "gather", "combo"]
     assert all(c["english"] for c in chips)
 
 

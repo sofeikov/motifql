@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from motifql.compile_service import (  # noqa: E402
-    Canned, CompileError, compile_english, load_canned)
+    Canned, CompileError, compile_composite, compile_english, load_canned)
 from motifql.engine import Engine  # noqa: E402
 from motifql.models.spark import SparkError  # noqa: E402
 from motifql.server import UI_DIR, create_app  # noqa: E402
@@ -163,7 +163,7 @@ def test_committed_chips_pin_path_motif_anchors() -> None:
     assert canned is not None
     chips = canned.chips
     assert [c["key"] for c in chips] == ["cycle", "fanout", "chain",
-                                         "scatter", "gather"]
+                                         "scatter", "gather", "combo"]
     by_key = {c["key"]: c for c in chips}
     for c in chips:
         assert c["label"] and c["blurb"] and c["english"]
@@ -177,6 +177,47 @@ def test_committed_chips_pin_path_motif_anchors() -> None:
     # chain's tail feeds the gather — chain-basic fires 0.698 there).
     assert by_key["gather"]["anchor_tids"] == [418378]
     assert by_key["fanout"]["anchor_tids"] == []
+    combo = by_key["combo"]
+    assert combo["english"] == [by_key["chain"]["english"],
+                                by_key["gather"]["english"]]
+    assert combo["labels"] == ["Layering chain", "Gather-scatter"]
+    assert combo["anchor_tids"] == [418378]
+
+
+def test_composite_two_queries_share_anchors() -> None:
+    res = compile_composite(["cycle one", "cycle two"], _engine(),
+                            complete=_ok, narrate_complete=_narrate_ok,
+                            anchor_tids=[2])
+    assert len(res.groups) == 2
+    for g in res.groups:
+        assert (g.compiled, g.source) == (True, "model")
+        assert len(g.witnesses) == 1
+        assert g.witnesses[0].witness[-1].transfer_id == 2
+        assert g.verdicts is not None and g.verdicts[0] is not None
+    with pytest.raises(CompileError):
+        compile_composite([], _engine(), complete=_ok)
+
+
+def test_composite_uncompilable_keeps_group_errors() -> None:
+    res = compile_composite(["a", "b"], _engine(), complete=_garbage,
+                            max_attempts=1)
+    assert len(res.groups) == 2
+    assert all(g.compiled is False and g.errors and g.witnesses == []
+               for g in res.groups)
+
+
+def test_composite_diagnosis_unified_and_fail_closed() -> None:
+    res = compile_composite(["cycle one", "cycle two"], _engine(),
+                            complete=_ok, narrate_complete=_narrate_ok,
+                            anchor_tids=[2])
+    assert res.diagnosis is not None and "$1,000" in res.diagnosis
+    res = compile_composite(["cycle one", "cycle two"], _engine(),
+                            complete=_ok, anchor_tids=[2])
+    assert res.diagnosis is None  # no narrate transport, no diagnosis
+    res = compile_composite(["cycle one", "cycle two"], _engine(),
+                            complete=_ok, narrate_complete=_down,
+                            anchor_tids=[2])
+    assert res.diagnosis is None  # transport down fails closed
 
 
 def test_pos_of() -> None:
@@ -269,6 +310,21 @@ def test_route_carries_narratives() -> None:
     assert first["narrative"] is None
     assert first["verdict"] is None
     assert first["narrative_weakest_step"] == 3
+
+
+def test_route_composite_groups() -> None:
+    app = create_app(_engine(), complete_fn=_ok,
+                     canned_path=UI_DIR / "canned.json",
+                     narrate_complete=_narrate_ok)
+    body = TestClient(app).post(
+        "/compile", json={"english": "a cycle", "english2": "another cycle",
+                          "anchor_tids": [2]}).json()
+    assert len(body["groups"]) == 2
+    assert body["motif"] == body["groups"][0]["motif"]  # back-compat mirror
+    assert body["diagnosis"] is not None  # unified across shapes
+    for g in body["groups"]:
+        assert g["compiled"] is True and len(g["witnesses"]) == 1
+        assert g["witnesses"][0]["verdict"] is not None
 
 
 def test_route_and_index() -> None:

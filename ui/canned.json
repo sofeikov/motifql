@@ -740,6 +740,22 @@
       "anchor_tids": [
         418378
       ]
+    },
+    {
+      "key": "combo",
+      "label": "Chain into gather",
+      "blurb": "A layering chain whose tail feeds a gather — two shapes, one transfer",
+      "english": [
+        "A layering chain: money flows through 5 to 8 transfers to a different account within 10 days. Patient gaps (true to 1 day, false by 5 days), amounts within 25%. Fire at 0.5.",
+        "Gather-scatter: one account collects from at least 2 distinct accounts and pays at least 2 distinct accounts within 4 days. Several on each side score higher (0 at 1, 1 at 3 or more) and the two counts balance within 4. Fire at 0.5."
+      ],
+      "labels": [
+        "Layering chain",
+        "Gather-scatter"
+      ],
+      "anchor_tids": [
+        418378
+      ]
     }
   ],
   "verdict": "A round trip of 3 transfers returns to the starting account within 2.9d for an overall score of 0.718 with nearly the same amount each hop, weakest in the amount similarity at (0.718)."

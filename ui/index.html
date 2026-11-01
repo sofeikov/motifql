@@ -86,6 +86,7 @@
   textarea {
     width: 100%;
     min-height: 122px;
+    max-height: 260px;
     resize: vertical;
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -182,6 +183,20 @@
   #score-line .verdict.fires { background: var(--green); color: #062316; }
   #score-line .verdict.quiet { background: #232c3a; color: var(--dim); }
   #score-line .meta { color: var(--dim); font-size: 12.5px; font-family: var(--mono); }
+  #composite-line {
+    padding: 6px 24px 0;
+    font-size: 13px;
+  }
+  #composite-line[hidden] { display: none; }
+  #composite-line .amt { color: var(--green); font-weight: 700; font-family: var(--mono); }
+  #composite-line .dim { color: var(--dim); }
+  .motif-head {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    margin: 10px 0 4px;
+  }
+  .motif-head:first-child { margin-top: 0; }
   #caption {
     padding: 6px 24px 0;
     min-height: 26px;
@@ -315,6 +330,26 @@
   }
   .legend i.active { border-color: var(--amber); }
   .legend i.todo { border-top-style: dashed; border-color: #3a4658; }
+  .legend i.shared { border-top-width: 5px; }
+  #legend-shared[hidden] { display: none; }
+  .deg-group {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    margin: 10px 0 2px;
+  }
+  .deg-group:first-child { margin-top: 0; }
+  #ev-shape { display: inline-flex; gap: 6px; margin-left: 10px; }
+  #ev-shape[hidden] { display: none; }
+  #ev-shape button {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 4px 10px;
+  }
+  #ev-shape button[aria-selected="true"] {
+    border-color: var(--green-dim);
+    color: var(--green);
+  }
   .legend em { font-style: normal; }
   #evasion {
     border-top: 1px solid var(--line);
@@ -486,6 +521,7 @@
     border: none;
     background: transparent;
     min-height: 96px;
+    max-height: 300px;
     padding: 12px 16px 6px;
     font-size: 14.5px;
   }
@@ -597,6 +633,7 @@
       <span class="verdict quiet" id="verdict">–</span>
       <span class="meta" id="score-meta"></span>
     </div>
+    <div id="composite-line" hidden></div>
     <div id="caption"><span class="dim">Press Scripted demo — or describe a pattern and compile it.</span></div>
     <div id="stage"><svg id="graph" role="img" aria-label="Witness graph"></svg></div>
     <div id="narrative" hidden></div>
@@ -604,10 +641,12 @@
       <span><i></i><em id="legend-done">traced hop</em></span>
       <span><i class="active"></i>playing now</span>
       <span><i class="todo"></i>not yet traced</span>
+      <span id="legend-shared" hidden><i class="shared"></i>in both shapes</span>
     </div>
     <div id="evasion" hidden>
       <div class="ev-head">
         <span class="ev-title">Evasion — synthetic noise on this witness</span>
+        <span id="ev-shape" hidden></span>
         <a class="ev-link" target="_blank" rel="noopener"
            href="https://github.com/sofeikov/motifql/blob/main/docs/2026-11-05-issue15-fixes.md#6-perturbation">full RQ2 curves</a>
       </div>

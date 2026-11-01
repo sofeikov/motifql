@@ -64,6 +64,30 @@ class CompileResult:
     verdicts: list[str | None] | None = None  # one-line why-it-matches
 
 
+@dataclass
+class MotifGroup:
+    """One query of a composite compile (same shape as CompileResult)."""
+
+    english: str
+    motif: str
+    compiled: bool
+    attempts: int
+    errors: list[str]
+    source: str
+    witnesses: list[MotifResult]
+    narratives: list[str | None] | None = None
+    narrative_weakest: list[int | None] | None = None
+    verdicts: list[str | None] | None = None
+
+
+@dataclass
+class CompositeResult:
+    """Two or more queries scored on the same anchors (combo demo)."""
+
+    groups: list[MotifGroup]
+    diagnosis: str | None = None  # unified why-it-matters, all shapes
+
+
 def load_canned(path: str | Path) -> Canned | None:
     """Read the committed scripted-demo pair; None when absent."""
     p = Path(path)
@@ -142,6 +166,56 @@ def compile_english(english: str, engine: Engine, *,
                                                 narrate_complete, canned)
     return CompileResult(result.text, True, result.attempts, result.errors,
                          source, witnesses, narratives, weakest, verdicts)
+
+
+def compile_composite(english_list: list[str], engine: Engine, *,
+                      complete=spark_complete,
+                      max_attempts: int = 3,
+                      n_witnesses: int = 3,
+                      sample_n: int = 3000,
+                      sample_seed: int = 7,
+                      anchor_tids: list[int] | None = None,
+                      canned: Canned | None = None,
+                      narrate_complete=None) -> CompositeResult:
+    """Compile several queries and score them on the same anchors.
+
+    Each query runs the full single path (repair loop, witnesses,
+    narratives, verdicts). An uncompilable query keeps its group with
+    errors; model/anchor failures raise CompileError for the request.
+    """
+    texts = [t.strip() for t in english_list]
+    if not texts:
+        raise CompileError("english_list must not be empty", 422)
+    groups = []
+    for text in texts:
+        res = compile_english(text, engine, complete=complete,
+                              max_attempts=max_attempts,
+                              n_witnesses=n_witnesses, sample_n=sample_n,
+                              sample_seed=sample_seed,
+                              anchor_tids=list(anchor_tids or []),
+                              canned=canned, narrate_complete=narrate_complete)
+        groups.append(MotifGroup(text, res.motif, res.compiled, res.attempts,
+                                 res.errors, res.source, res.witnesses,
+                                 res.narratives, res.narrative_weakest,
+                                 res.verdicts))
+    diagnosis = _diagnose(groups, narrate_complete)
+    return CompositeResult(groups, diagnosis)
+
+
+def _diagnose(groups: list[MotifGroup], narrate_complete) -> str | None:
+    """Unified diagnosis over groups' first witnesses (fail-closed)."""
+    ok = [g for g in groups
+          if g.compiled and g.witnesses and g.witnesses[0].witness]
+    if len(ok) < 2 or narrate_complete is None:
+        return None
+    try:
+        res = narrate_mod.summarize_composite(
+            [g.english for g in ok], [g.motif for g in ok],
+            [_witness_dict(g.witnesses[0]) for g in ok],
+            complete=narrate_complete)
+    except Exception:
+        return None
+    return res.text
 
 
 def _narratives(english: str, motif_text: str, witnesses: list[MotifResult],

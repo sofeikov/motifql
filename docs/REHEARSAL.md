@@ -256,20 +256,28 @@ Record at 1600×1000 or wider; the layout collapses below 900px.
 
 - [ ] `pytest tests/test_compile.py tests/test_server.py tests/test_evasion.py` green
 - [ ] Boot prints the demo card, landing shows, page dives in and auto-plays the triangle
-- [ ] All five "Try one" chips fire (cycle 0.718 / fan-out 1.0 / chain 0.809 / scatter 0.998 / gather 0.75)
+- [ ] All six "Try one" chips fire (cycle 0.718 / fan-out 1.0 / chain 0.809 / scatter 0.998 / gather 0.75 / combo 0.698+0.75)
 
 ## Combo demo (chain → gather, anchor 418378)
 
 Train RANDOM instance 10: a 5-hop layering chain (0.698) whose
 tail feeds a 15-payment gather (0.75) — two shapes, one anchor,
-two shared transfers. Demo as two takes/tabs with explicit
-anchors (explicit `?anchors=` overrides the chip pins):
+two shared transfers. One click on the **Chain into gather**
+chip: both queries compile into ONE unified graph (17 transfers,
+11.3s trace), the score reads 2/2 composite, and the two shared
+transfers draw thicker — the caption calls out "in both shapes"
+as each plays. Long column-skipping edges bow around the nodes
+they pass. One unified diagnosis leads
+("the chain's tail feeds the gather"), with per-shape verdicts
+below; side panels stack both shapes (dual motif blocks,
+per-shape degree bars). Evasion gets a shape toggle
+(chain/gather) attacking each shape's own witness.
 
-- Chain: `?sentence=`*chain-basic*`&anchors=418378&landing=0`
-- Gather: click the Gather chip (or the same link pattern)
-
-Narration: "Same money, two shapes — the chain's tail lands in
-the gather. One anchor, two queries, both fire."
+Narration: "Same money, two shapes — one graph. The chain's
+tail lands in the gather, and the two white-dotted transfers
+prove it's one criminal structure, not a coincidence."
+(Needs `MUSE_KEY`: the gather query compiles live, like the
+optional live-English beat.)
 - [ ] Badge reads *scripted* or *cached* (never mid-take surprises)
 - [ ] `?at=99` shows the completed trace (title-card still)
 - [ ] `?at=99&noise=15&gap=1` shows fuzzy 0.357 / exact 0 (evasion still)
