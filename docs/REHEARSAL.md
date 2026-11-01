@@ -27,7 +27,14 @@ Required opening line (hackathon provenance, DESIGN.md §2):
 
 ### 0:00–0:20 — Hook: the cost of the problem (title cards, no demo)
 
-Say this over simple fullscreen numbers. No jargon yet.
+**Screen:** fullscreen title cards over black — no app, no
+browser chrome. Four cards, one number each in big type with a
+one-line label underneath.
+**Action:** hold each card ~4–5s, cutting on the narration
+beats: $2T laundered (2–5% of GDP, UNODC) → $16.6B US fraud
+2024, +33% (FBI IC3) → $4–6B/year in bank fines (Fenergo) →
+~$20B monitoring market, growing past $50B (analyst range).
+Numbers only on screen — no jargon yet.
 
 > "Every year, criminals launder up to **$2 trillion** — 2 to 5%
 > of everything the world produces. Drugs, scams, corruption —
@@ -43,12 +50,16 @@ Say this over simple fullscreen numbers. No jargon yet.
 > software — growing to $50 billion-plus by the early 2030s.
 > [Fortune/Mordor] That's the market we're in."
 
-On screen: 4 cards, one number each: $2T laundered / $16.6B US
-fraud / $4-6B fines per year / $20B monitoring market.
-
 ### 0:20–0:50 — Why it's hard: crime is social, software is lonely
 
-This is the key insight. Slow down here.
+**Screen:** simple slides (still no app). First a single
+A→B→C→A triangle diagram that builds edge by edge; then a
+split frame — left: one transfer row ("$9,000 — looks fine"),
+right: the full triangle ("looks criminal").
+**Action:** build the triangle while saying "picture it"; cut
+to the split frame on "each single transfer looks innocent"
+and hold it through the "one transfer at a time" paragraph.
+Slow down — this is the talk's one idea.
 
 > "Here's the thing judges should take away: **money laundering
 > and fraud are fundamentally social activities.** Nobody launders
@@ -67,15 +78,22 @@ This is the key insight. Slow down here.
 > hours and within 10%' — breaks the moment a criminal waits 50
 > hours. Which is exactly what they do."
 
-On screen: animate a simple A→B→C→A triangle while talking. Then
-show one transfer row highlighted ("looks fine") vs the full
-shape ("looks criminal").
-
 ### 0:50–1:10 — The solution in one breath (landing → workspace)
 
-Open on the landing: one chat box in the center of the screen,
-pre-filled with *"Money leaves an account and comes back to it
-within 7 days…"*. Hit Enter — the UI dives into the workspace.
+**Screen:** the app landing — page title, one centered chat
+box pre-filled with *"Money leaves an account and comes back
+to it within 7 days…"*, six "Try one" chips below, footer
+with "5,078,345 transfers · 8 motifs". After Enter: the
+workspace — left rail (English box, Motif panel, witness
+tabs), center stage (graph + score line + caption +
+transport), right rail (Why-this-score bars, narrative,
+evasion sliders).
+**Action:** manual take (`?autorun=0`): press Enter on
+"describe the criminal shape" — the UI dives into the
+workspace (~0.3s) and the trace starts playing by itself.
+Say the translator/engine distinction over the dive and the
+first seconds of motion. (Auto-run plays this alone: landing
+reads ~1.1s, then the dive; `?landing=0` skips it.)
 
 > "MotifQL: describe the criminal shape in plain English — and a
 > search engine finds the money trail across millions of
@@ -89,15 +107,18 @@ within 7 days…"*. Hit Enter — the UI dives into the workspace.
 > proof. The model never touches the money. All finding happens
 > in the engine."
 
-Auto-run plays this by itself: landing reads ~1.1s, then the
-dive. (`?autorun=0` holds on the landing for a manual take;
-`?landing=0` skips it.)
-
 ### 1:10–1:25 — Beat: Spark writes the motif (~15s)
 
-The Motif panel fills with genuine Muse Spark output (badge:
-*scripted · Muse Spark output* — a committed, verified model
-reply, so the recording never depends on the network).
+**Screen:** left-rail Motif panel holding the compiled
+detector plus the source badge (*scripted · Muse Spark
+output* — a committed, verified model reply, so the take
+needs no network). Stage parked at frame 0 (separate take
+with `?autoplay=0`) so nothing moves behind the explanation.
+**Action:** cursor tours the three parts top to bottom, one
+phrase each — `match` (the shape), `soft` (the fuzzy
+conditions), `emit` (the threshold) — and lands on the badge
+at the end. Badge meanings: *live* = just compiled, *cached*
+= prompt-hash cache hit, *scripted* = committed fallback.
 
 Narration:
 
@@ -106,17 +127,21 @@ Narration:
 > touches query code — and Spark's job is done. Everything after
 > this is the engine."
 
-Point at the three parts: the shape (`match`), the fuzzy
-conditions (`soft`), the threshold (`emit`). Badge meanings:
-*live* = just compiled, *cached* = prompt-hash cache hit,
-*scripted* = committed fallback.
-
 ### 1:25–1:50 — Beat: the trace — the engine shows its work (~25s)
 
-The witness plays hop by hop on train CYCLE instance 102 (score
-0.718, FIRES): each hop draws in amber with its amount and gap,
-the caption narrates from → to, and the *Why this score* bars
-show both conditions holding (gap 0.841, amount 0.718).
+**Screen:** center stage — the triangle draws hop by hop on
+train CYCLE instance 102 (amber active edge, amount + gap
+labels, from → to caption below). Around it: score line
+"0.718 FIRES · 51 expansions", *Why this score* bars (gap
+0.841, amount 0.718), verdict lede + investigator paragraph
+with the "Weakest step: hop 3" badge under the stage, and the
+transport (step / play / scrub / clock / Loop).
+**Action:** fresh load, hands off — let the 4.7s trace play
+untouched, hold the end frame ("Trace complete — 3 hops,
+span 2.9d") 2–3s. Gesture at the score meta on "search
+work". Transport stepping or `?at=SECONDS` stills cover any
+frozen frame; `?loop=1` (or the Loop tick) holds a living
+frame instead.
 
 Narration:
 
@@ -128,19 +153,20 @@ Narration:
 > verdict saying why it matches, plus the full investigator
 > paragraph with the weakest link flagged."
 
-Gesture at the score meta (`51 expansions`) when you say
-"search work". Under the stage, the investigator narrative
-retells the witness in one paragraph with the weakest step
-badged (hop 3 — committed for the scripted take, model-written
-for live compiles). End frame: the closed triangle, "Trace
-complete — 3 hops, span 2.9d". Scrub or step with the transport
-if the take needs a still; `?at=SECONDS` deep-links any moment,
-narrative included (total 5.6s).
-
 ### 1:50–2:25 — Beat: evasion (~35s)
 
-The "it actually works" minute, visceral: with the triangle on
-screen, drag the **Amount noise** slider to +15%.
+**Screen:** start from the completed-triangle still
+(`?at=99`): closed triangle, evasion panel with **Amount
+noise** (0–30%) and **Gap scale** (×1–×2) sliders at rest,
+fuzzy vs exact bars side by side, live caption underneath.
+**Action:** slow drag of Amount noise 0→+15% — fuzzy bar
+sinks 0.718→0.357 while exact (α=emit) has already cliffed
+1→0; pause 2s on the caption "+15% noise: fuzzy 0.718→0.357,
+exact 1→0" as the *Why this score* amount bar sinks with it.
+Reset noise to 0, drag Gap scale to ×2.0 — fuzzy 0.718→0.431,
+exact 1→0 again. Sliders re-score live in <500ms; the
+scripted anchor falls back to a committed curve, so this beat
+needs no key either. Cursor visible throughout.
 
 Narration:
 
@@ -153,16 +179,6 @@ Narration:
 > condition grades 0 to 1 instead of passing or failing.
 > Criminals evade thresholds for a living. Don't give them one."
 
-What happens on screen: the fuzzy bar sinks 0.718→0.357 while
-the exact bar (α=emit) has already cliffed 1→0 at +10% — the
-caption reads "+15% noise: fuzzy 0.718→0.357, exact 1→0" and the
-*Why this score* amount bar sinks with it. Reset noise to 0, drag
-**Gap scale** to ×2.0: fuzzy 0.718→0.431, exact 1→0 again. The
-same draws as the report's perturbation curves (link under the
-sliders), applied to this witness only. Sliders re-score live in
-<500ms (debounced); the scripted anchor falls back to a committed
-curve, so this beat needs no key either.
-
 Stills (trace end + slider state deep-link together):
 `?at=99&noise=15&gap=1` (mid-attack),
 `?at=99&noise=0&gap=2` (gap cliff),
@@ -170,7 +186,13 @@ Stills (trace end + slider state deep-link together):
 
 ### 2:25–2:50 — Beat: proof (results card, ~25s)
 
-Cut away from the UI to one results slide. Keep it to two lines:
+**Screen:** one results slide (app gone): 2-row table —
+CYCLE 24-vs-1, RANDOM 13-vs-0 at 50 alerts/day — plus a
+2-line engine footer (exact best-trail search, ~15× stream
+headroom; 47/47 English → working detectors).
+**Action:** hard cut from the app; read the two lines; hold
+the slide 3s. (Full table + honest limits live in README —
+linked, never read on camera.)
 
 > "On the standard IBM benchmark, at 50 alerts a day — a real
 > analyst's workload — MotifQL catches the structural patterns a
@@ -189,24 +211,26 @@ Cut away from the UI to one results slide. Keep it to two lines:
 | CYCLE (money comes back) | **24** | 1 |
 | RANDOM (layering chains) | **13** | 0 |
 
-(Full table + honest limits in README; don't read caveats on
-camera, just link them.)
-
 ### 2:50–3:00 — Close (~10s)
+
+**Screen:** end card — repo URL + "Built with Muse Spark +
+Muse Code".
+**Action:** hold 3s under the closing line.
 
 > "Crime moves in networks. It's time our detectors did too.
 > MotifQL — follow the money."
 
-End card: repo URL, "Built with Muse Spark + Muse Code".
-
 ### Optional live-English beat (~20s, needs `MUSE_KEY`)
 
-Only if time allows or as a separate clip. Type a new description
-(e.g. the RQ4 fan-out item: *"Fan-out: one account pays at least
-2 distinct accounts within 4 days…"*) and press **Compile +
-show**. The repair loop runs (≤3 attempts) and the best sample
-witnesses render. If the model is down, the page says so honestly
-— cut this beat, the scripted path carries the story.
+**Screen:** workspace sidebar English box with a fresh
+sentence (e.g. the RQ4 fan-out item: *"Fan-out: one account
+pays at least 2 distinct accounts within 4 days…"*); result
+area clears on submit.
+**Action:** only if time allows or as a separate clip — paste
+the sentence, press **Compile + show**; the Motif panel fills
+live (badge: *live*), sample witnesses render into tabs. If
+the model is down, the page shows the honest error box — cut
+the beat, the scripted path carries the story.
 
 ## Boot
 
@@ -218,7 +242,7 @@ PYTHONPATH=src uv run python -m motifql.server --demo --port 8000
 
 Warmup takes ~2s (full HI-Small graph build). Open
 <http://127.0.0.1:8000/> — the landing reads ~1.1s, dives into
-the workspace, and the witness plays for 5.6s.
+the workspace, and the witness plays for 4.7s.
 
 Record at 1600×1000 or wider; the layout collapses below 900px.
 
@@ -262,20 +286,25 @@ Record at 1600×1000 or wider; the layout collapses below 900px.
 
 Train RANDOM instance 10: a 5-hop layering chain (0.698) whose
 tail feeds a 15-payment gather (0.75) — two shapes, one anchor,
-two shared transfers. One click on the **Chain into gather**
-chip: both queries compile into ONE unified graph (17 transfers,
-11.3s trace), the score reads 2/2 composite, and the two shared
-transfers draw thicker — the caption calls out "in both shapes"
-as each plays. Long column-skipping edges bow around the nodes
-they pass. One unified diagnosis leads
-("the chain's tail feeds the gather"), with per-shape verdicts
-below; side panels stack both shapes (dual motif blocks,
-per-shape degree bars). Evasion gets a shape toggle
-(chain/gather) attacking each shape's own witness.
+two shared transfers.
+
+**Screen:** landing with all six chips; after submit, ONE
+unified graph (17 transfers, 9 accounts, 9.6s trace) — score
+reads "2/2 composite", strip reads "2/2 shapes fire on
+transfer #418378 · 2 shared transfers link the shapes",
+shared edges draw thicker, caption calls "in both shapes".
+Side panels stack both shapes: dual motif blocks, per-shape
+degree bars, unified diagnosis lede ("the chain's tail feeds
+the gather") with per-shape verdicts below, evasion shape
+toggle (chain/gather).
+**Action:** click the **Chain into gather** chip (box fills
+with both queries), Enter; let the union trace play, hold the
+end frame. Optionally toggle evasion to gather and drag one
+slider to show per-shape attack.
 
 Narration: "Same money, two shapes — one graph. The chain's
-tail lands in the gather, and the two white-dotted transfers
-prove it's one criminal structure, not a coincidence."
+tail lands in the gather, and the two shared transfers prove
+it's one criminal structure, not a coincidence."
 (Needs `MUSE_KEY`: the gather query compiles live, like the
 optional live-English beat.)
 - [ ] Badge reads *scripted* or *cached* (never mid-take surprises)
