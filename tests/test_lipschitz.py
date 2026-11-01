@@ -246,3 +246,30 @@ def test_amount_only_end_to_end_bound() -> None:
     # Exact prediction: both amount leaves read h = 2p/(1+p); gap
     # leaves stay 1.0 and the single witness takes the min.
     assert s0 - s1 == pytest.approx(2 * p / ((1 + p) * f))
+
+
+def test_span_cut_ejects_scaled_witness() -> None:
+    # PR #34 review probe, pinned: the cheap gap-axis evasion is the
+    # hard span window, not the soft `patient` slope. A 5-hop cycle at
+    # 24h gaps (span 96h) scaled x1.75 sits exactly on the 7d window
+    # and scores patient(42h) = 0.8125; at x1.76 the span cut ejects
+    # the witness discretely (0.0), while no soft leaf moved much.
+    doc = parse_text(
+        PATIENT
+        + "motif t { match (a:account) -[e:transfer*2..5]-> (a)"
+        + " where e is time_ordered and span(e) <= 7d"
+        + " soft each e: e.gap is patient"
+        + " and each e: e.amount ~= prev.amount within 20%"
+        + " score min emit when score >= 0.5 }")
+    plan, libs = compile_motif(doc, "t"), libs_from_doc(doc)
+
+    def _cycle(gap_factor: float) -> TemporalGraph:
+        rows = [(i * 24 * 60 * gap_factor, "001", f"A{i}", "001",
+                 f"A{(i + 1) % 5}", 100.0) for i in range(5)]
+        return TemporalGraph.from_transfers(_frame(rows))
+
+    kept = score(_cycle(1.75), 4, plan, libs, prune=False)
+    assert kept.top_score == pytest.approx((120 - 42) / 96)
+    ejected = score(_cycle(1.76), 4, plan, libs, prune=False)
+    assert ejected.top_score == 0.0
+    assert not ejected.found

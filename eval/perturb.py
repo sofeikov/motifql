@@ -215,12 +215,16 @@ def main(
                 plan = plans[m]
                 rq1._PLAN = plan
                 rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, True, alphas[m], None
-                cr_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} crisp")
+                cr_top, _, _, cr_tr = rq1._replay(hold_pos, workers, f"{m} crisp")
                 scores[f"{m}__crisp"] = cr_top
                 # Exact branch-and-bound (review #14.1): no screen.
                 rq1._PRUNE, rq1._CRISP, rq1._CALPHA, rq1._FLOOR = True, False, 0.0, EXACT_FLOOR
-                fz_top, _, _, _ = rq1._replay(hold_pos, workers, f"{m} fuzzy")
+                fz_top, _, _, fz_tr = rq1._replay(hold_pos, workers, f"{m} fuzzy")
                 scores[f"{m}__fuzzy"] = fz_top
+                # Issue-25 §1.5 hypothesis check: the amount-axis theorem
+                # needs no truncation on either run.
+                log.info("  %s: truncation crisp %.4f fuzzy %.4f",
+                         m, cr_tr.mean(), fz_tr.mean())
             hold_base = evaluate.holdout_frame(
                 pdf, memb, inst, splits.HOLDOUT_START, splits.HOLDOUT_END, len(hold_pos))
             # Splits from the perturbed frame (review #14.2/#14.3);
