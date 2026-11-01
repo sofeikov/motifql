@@ -141,6 +141,11 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
     def app_js() -> FileResponse:
         return FileResponse(UI_DIR / "app.js", media_type="application/javascript")
 
+    @app.get("/hook")
+    def hook() -> FileResponse:
+        """Pitch-video hook frame (the cost of the problem)."""
+        return FileResponse(UI_DIR / "hook-frame.html")
+
     @app.get("/healthz")
     def healthz() -> dict:
         return {"ok": True, "motifs": engine.motif_names,

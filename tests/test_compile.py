@@ -347,3 +347,5 @@ def test_route_and_index() -> None:
     assert r.json()["anchor_tids"] == [2012559]
     r = client.get("/")
     assert r.status_code == 200 and "motif" in r.text.lower()
+    r = client.get("/hook")
+    assert r.status_code == 200 and "the market we" in r.text

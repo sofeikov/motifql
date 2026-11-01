@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MotifQL — the cost of the problem</title>
+<!-- Pitch video 0:00–0:20 (docs/REHEARSAL.md) as one static frame.
+     Open fullscreen (F11) at 16:9 and record. -->
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #11161e;
+    --panel-2: #151c26;
+    --line: #232c3a;
+    --text: #e9eef5;
+    --dim: #9fadbf;
+    --faint: #667080;
+    --green: #3ddc84;
+    --green-dim: #1d5c3c;
+    --amber: #f0b429;
+    --red: #f2707a;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 50% 42%, #101823 0%, var(--bg) 72%) var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.4;
+    overflow: hidden;
+  }
+  .frame {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 2.6vh;
+    padding: 4vh 4vw 4.5vh;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 1.2vw;
+  }
+  header h1 {
+    margin: 0;
+    font-size: clamp(18px, 2.2vw, 42px);
+    font-weight: 700;
+  }
+  header h1 .q { color: var(--green); }
+  header p {
+    margin: 0;
+    font-size: clamp(12px, 1.15vw, 22px);
+    color: var(--dim);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1.6vw;
+    min-height: 0;
+  }
+  .tile {
+    position: relative;
+    background: rgba(17, 22, 30, 0.82);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 2.6vh 2vw 2.4vh;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .tile.market { border-color: var(--green-dim); }
+  .label {
+    font-size: clamp(10px, 0.85vw, 16px);
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .big {
+    margin-top: 1vh;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(34px, 5.2vw, 100px);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--green);
+    white-space: nowrap;
+  }
+  .big.red { color: var(--red); }
+  .big .pre { font-size: 0.36em; letter-spacing: 0; margin-right: 0.3em; color: var(--dim); vertical-align: 0.45em; }
+  .big .unit { font-size: 0.42em; letter-spacing: 0; margin-left: 0.15em; color: var(--text); }
+  .big .arrow { color: var(--faint); font-size: 0.6em; margin: 0 0.1em; vertical-align: 0.12em; }
+  .what {
+    margin-top: 1.2vh;
+    font-size: clamp(14px, 1.35vw, 26px);
+    font-weight: 600;
+  }
+  .sub {
+    margin-top: 0.4vh;
+    font-size: clamp(12px, 1.05vw, 20px);
+    color: var(--dim);
+  }
+  .sub strong { color: var(--text); font-weight: 600; }
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.8em;
+    font-weight: 700;
+    padding: 0.1em 0.55em;
+    border-radius: 6px;
+    margin-left: 0.4em;
+    color: var(--amber);
+    border: 1px solid #5c4a1d;
+    background: rgba(240, 180, 41, 0.08);
+  }
+  .viz { margin-top: auto; padding-top: 1.6vh; }
+  .top { display: flex; align-items: center; gap: 1vw; }
+  .src {
+    margin-left: auto;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: clamp(9px, 0.72vw, 14px);
+    padding: 2px 10px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    color: var(--faint);
+  }
+
+  /* Meters, as in the UI's "Why this score" bars. */
+  .meter-row {
+    display: grid;
+    grid-template-columns: 7ch minmax(0, 1fr) 8ch;
+    align-items: center;
+    gap: 1vw;
+    margin: 0.9vh 0;
+    font-family: var(--mono);
+    font-size: clamp(11px, 0.95vw, 18px);
+    color: var(--dim);
+  }
+  .meter-row .val { color: var(--text); font-weight: 700; text-align: right; }
+  .meter-row .val.green { color: var(--green); }
+  .meter-row .val.red { color: var(--red); }
+  .bar {
+    position: relative;
+    height: clamp(7px, 1.1vh, 14px);
+    border-radius: 6px;
+    background: #232c3a;
+    overflow: hidden;
+  }
+  .bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 6px; }
+  .bar i.green { background: var(--green); }
+  .bar i.dim { background: #3a4658; }
+  .bar i.red { background: var(--red); }
+  .bar i.red-dim { background: #6b3238; }
+
+  /* World GDP as 100 squares; 2 lit, 3 more "up to". */
+  .cells {
+    display: grid;
+    grid-template-columns: repeat(50, 1fr);
+    gap: clamp(2px, 0.18vw, 4px);
+  }
+  .cells span { aspect-ratio: 1; border-radius: 2px; background: #1a2230; }
+  .cells span.hit { background: var(--green); }
+  .cells span.maybe { background: var(--green-dim); }
+  .note {
+    font-family: var(--mono);
+    font-size: clamp(10px, 0.8vw, 15px);
+    color: var(--faint);
+    margin-top: 0.8vh;
+  }
+  .note .g { color: var(--green); }
+  .note .gd { color: var(--green-dim); }
+
+  footer {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2vw;
+  }
+  footer .closer {
+    font-size: clamp(18px, 2.2vw, 42px);
+    font-weight: 700;
+  }
+  footer .closer .q { color: var(--green); }
+  footer .foot {
+    font-family: var(--mono);
+    font-size: clamp(10px, 0.8vw, 15px);
+    color: var(--faint);
+  }
+
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    .frame { height: auto; padding: 20px 16px; }
+    .grid { grid-template-columns: 1fr; grid-template-rows: none; }
+    .tile { padding: 18px 16px; }
+    .top { flex-wrap: wrap; gap: 6px; }
+    .src { margin-left: 0; }
+    footer { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header>
+    <h1>MotifQL <span class="q">·</span> follow the money</h1>
+    <p>the cost of the problem</p>
+  </header>
+
+  <div class="grid">
+    <section class="tile">
+      <div class="top"><div class="label">Laundered every year</div><span class="src">UNODC estimate</span></div>
+      <div class="big"><span class="pre">up to</span>$2<span class="unit">trillion</span></div>
+      <div class="what">2–5% of everything the world produces.</div>
+      <div class="sub">Drugs, scams, corruption — it all needs washing before it can be spent.</div>
+      <div class="viz">
+        <div class="cells" id="gdp"></div>
+        <div class="note">each square = 1% of world GDP · <span class="g">■</span> 2% <span class="gd">■</span> up to 5%</div>
+      </div>
+    </section>
+
+    <section class="tile">
+      <div class="top"><div class="label">US reported cyber-fraud losses</div><span class="src">FBI IC3 · 2024</span></div>
+      <div class="big">$16.6<span class="unit">billion</span></div>
+      <div class="what">In 2024, in the US alone.<span class="chip">▲ 33% in one year</span></div>
+      <div class="viz">
+        <div class="meter-row"><span>2023</span><div class="bar"><i class="dim" style="width:75.3%"></i></div><span class="val">$12.5B</span></div>
+        <div class="meter-row"><span>2024</span><div class="bar"><i class="green" style="width:100%"></i></div><span class="val green">$16.6B</span></div>
+      </div>
+    </section>
+
+    <section class="tile">
+      <div class="top"><div class="label">Fines paid by banks · every year</div><span class="src">Fenergo</span></div>
+      <div class="big red">$4–6<span class="unit">billion</span></div>
+      <div class="what">Banks are legally required to catch this.</div>
+      <div class="sub">When they miss, <strong>they pay</strong>.</div>
+      <div class="viz">
+        <div class="meter-row"><span>low</span><div class="bar"><i class="red-dim" style="width:66.7%"></i></div><span class="val">$4B</span></div>
+        <div class="meter-row"><span>high</span><div class="bar"><i class="red" style="width:100%"></i></div><span class="val red">$6B</span></div>
+      </div>
+    </section>
+
+    <section class="tile market">
+      <div class="top"><div class="label">Transaction-monitoring software · per year</div><span class="src">Fortune · Mordor</span></div>
+      <div class="big">$20<span class="unit">B</span><span class="arrow">→</span>$50<span class="unit">B+</span></div>
+      <div class="what">What banks spend to catch it — growing to $50B+ by the early 2030s.</div>
+      <div class="viz">
+        <div class="meter-row"><span>today</span><div class="bar"><i class="dim" style="width:40%"></i></div><span class="val">~$20B</span></div>
+        <div class="meter-row"><span>2030s</span><div class="bar"><i class="green" style="width:100%"></i></div><span class="val green">$50B+</span></div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="closer">That's the market we're in<span class="q">.</span></div>
+    <div class="foot">estimates · sources on each tile</div>
+  </footer>
+</div>
+<script>
+  const gdp = document.getElementById("gdp");
+  for (let i = 0; i < 100; i++) {
+    const c = document.createElement("span");
+    if (i < 2) c.className = "hit"; else if (i < 5) c.className = "maybe";
+    gdp.appendChild(c);
+  }
+  // Esc returns to the app (no visible link, so the frame records clean).
+  addEventListener("keydown", e => { if (e.key === "Escape") location.href = "/"; });
+</script>
+</body>
+</html>
