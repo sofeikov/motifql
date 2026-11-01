@@ -1,0 +1,10 @@
+term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}

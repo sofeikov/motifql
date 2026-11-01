@@ -1,0 +1,10 @@
+motif,caught,n,bg_fire,new_caught,marginal_bg_fire
+PROPOSAL,[],2,0.0046,[],0.0044
+round_trip,[311],2,0.0001,,
+layering_chain,[],2,0.0001,,
+fan_out,[],2,0.2186,,
+fan_in,[],2,0.0193,,
+scatter_gather,[],2,0.0001,,
+gather_scatter,[],2,0.0375,,
+structuring_fan_in,[],2,0.0,,
+bipartite_butterfly,[],2,0.0016,,
