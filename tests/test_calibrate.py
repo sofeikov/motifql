@@ -20,7 +20,9 @@ import pytest
 
 from eval.calibrate import (
     build_eval_frame,
+    pick_precision_winner,
     pick_winner,
+    precision_numbers,
     run_fit,
     sample_eval_positions,
     sampled_objective,
@@ -313,6 +315,45 @@ def _synthetic_dataset(root: Path) -> None:
     inst.write_parquet(root / "pattern_instances.parquet")
 
 
+def test_precision_numbers_counts_caught_and_fires() -> None:
+    tids = np.array([10, 11, 12, 13, 14])
+    top = np.array([0.9, 0.2, 0.7, 0.6, 0.1])
+    inst_members = {1: [10, 11], 2: [12]}
+    bg_mask = np.array([False, False, False, True, True])
+    nums = precision_numbers(top, tids, inst_members, 0.5, bg_mask)
+    assert nums["caught"] == 2
+    assert nums["bg_fires"] == 1
+    assert nums["margin"] == pytest.approx(0.2)  # min(0.9, 0.7) - 0.5
+    assert nums["n_target_instances"] == 2
+    strict = precision_numbers(top, tids, inst_members, 0.8, bg_mask)
+    assert strict["caught"] == 1
+    assert strict["margin"] == pytest.approx(0.1)  # min over caught only
+    nothing = precision_numbers(np.zeros(5), tids, inst_members, 0.5, bg_mask)
+    assert nothing["caught"] == 0
+    assert nothing["margin"] == float("-inf")
+
+
+def test_pick_precision_winner_prefers_feasible_then_fires() -> None:
+    rows = [
+        {"try": 0, "caught": 8, "bg_fires": 100, "margin": 0.1, "width": 0.5},
+        {"try": 1, "caught": 8, "bg_fires": 60, "margin": 0.05, "width": 0.5},
+        {"try": 2, "caught": 7, "bg_fires": 10, "margin": 0.4, "width": 1.5},
+    ]
+    w = pick_precision_winner(rows, baseline_caught=8)
+    assert w["try"] == 1  # feasible + fewest fires beats infeasible
+    assert w["feasible"] is True
+    # Nothing feasible: least-bad (most caught, then fewest fires).
+    w2 = pick_precision_winner(rows, baseline_caught=9)
+    assert w2["try"] == 1
+    assert w2["feasible"] is False
+    # Fires tie: larger margin wins.
+    tied = [
+        {"try": 0, "caught": 8, "bg_fires": 60, "margin": 0.05, "width": 0.5},
+        {"try": 1, "caught": 8, "bg_fires": 60, "margin": 0.20, "width": 0.1},
+    ]
+    assert pick_precision_winner(tied, 8)["try"] == 1
+
+
 def test_fit_runs_end_to_end_and_resumes(tmp_path: Path) -> None:
     data = tmp_path / "data"
     _synthetic_dataset(data)
@@ -334,4 +375,23 @@ def test_fit_runs_end_to_end_and_resumes(tmp_path: Path) -> None:
     # Resume: same winner without recomputing the search.
     again = run_fit(data, "round_trip", tries=2, seed=24, budgets=[50, 100],
                     bg_n=60, workers=1, out=out)
+    assert again["winner_try"] == summary["winner_try"]
+
+
+def test_precision_fit_runs_end_to_end(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    _synthetic_dataset(data)
+    out = tmp_path / "calp"
+    summary = run_fit(data, "round_trip", tries=2, seed=24, budgets=[50, 100],
+                      bg_n=60, workers=1, out=out, objective="precision")
+    trace = pl.read_csv(out / "trace.csv")
+    assert trace.height == 3
+    assert set(trace.columns) >= {"try", "is_baseline", "caught", "bg_fires",
+                                  "bg_per_day", "margin"}
+    fit = json.loads((out / "fitted.json").read_text())
+    validate_params("round_trip", fit["params"])
+    assert "feasible" in fit
+    assert (out / "confirm_train_summary.csv").exists()
+    again = run_fit(data, "round_trip", tries=2, seed=24, budgets=[50, 100],
+                    bg_n=60, workers=1, out=out, objective="precision")
     assert again["winner_try"] == summary["winner_try"]
