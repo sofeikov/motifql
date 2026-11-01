@@ -163,6 +163,86 @@ def test_run_agent_fails_closed_on_unknown_instance() -> None:
     assert queried <= {0, 1, 2, 3, 4, 5, 6, 7}
 
 
+def test_newly_caught_is_proposal_minus_union() -> None:
+    # Issue #26: gain is instances the proposal catches that NO current
+    # motif catches — not caught(proposal) − max caught(motif).
+    ctx = _ctx()
+    # Base m0 catches instance 2 (0.9 >= 0.5), misses 1.
+    assert D.union_caught(ctx, ["m0"], [1, 2]) == {2}
+    assert D.newly_caught([1, 2], {2}) == [1]
+    assert D.newly_caught([2], {2}) == []
+    # Complementary specialist: catches 2 fresh instances while the
+    # generalist catches 5 others. Max-based gain says 2-5 = -3;
+    # union gain is +2.
+    assert D.gain_vs_union([10, 11], {1, 2, 3, 4, 5}) == 2
+    # Overlapping proposal: max-based gain claims 2-1 = +1 for
+    # re-catching one generalist instance; union gain is +1 only for
+    # the genuinely new one... and 0 when fully overlapping.
+    assert D.gain_vs_union([1, 2], {1}) == 1
+    assert D.gain_vs_union([1, 2], {1, 2}) == 0
+
+
+def test_marginal_bg_fire_counts_only_new_fires() -> None:
+    # Issue #26: union-marginal bg fire = proposal fires on background
+    # no current motif fires on.
+    ctx = _ctx()
+    # Base m0 never fires on bg (all 0.0); proposal fires on 2/4.
+    tops = {4: 0.9, 5: 0.9, 6: 0.0, 7: 0.0}
+    assert D.marginal_bg_fire(tops, 0.5, ctx, ["m0"]) == 0.5
+    # Now the base fires on 4 and 5 too: fully overlapping specialist
+    # has zero marginal fire despite 2/4 absolute fire.
+    ctx.base_scores["m0"].update({4: 0.9, 5: 0.9})
+    assert D.marginal_bg_fire(tops, 0.5, ctx, ["m0"]) == 0.0
+    # Partial overlap: only position 5 is new.
+    ctx.base_scores["m0"].update({5: 0.0})
+    assert D.marginal_bg_fire(tops, 0.5, ctx, ["m0"]) == 0.25
+
+
+def test_gate_marginal_mode_passes_overlapping_specialist() -> None:
+    # The absolute gate holds the specialist (<= base median) stricter
+    # than the generalists it complements; the marginal gate charges
+    # only NEW background fires.
+    ctx = _ctx()
+    ctx.base_bg_fire["m0"] = 0.5  # median 0.5 -> allowed 0.5
+    ctx.base_scores["m0"].update({4: 0.9, 5: 0.9, 6: 0.9, 7: 0.0})
+    tops = {0: 0.9, 1: 0.9, 2: 0.9, 3: 0.9,
+            4: 0.9, 5: 0.9, 6: 0.9, 7: 0.0}  # absolute fire 3/4
+    run = lambda t: (lambda want, plan, libs: {p: t[p] for p in want})  # noqa: E731
+    g_abs = D.gate(ctx, MOTIF, run(tops), [1, 2], ["m0"], bg_mode="absolute")
+    assert not g_abs.passed and "bg fire" in g_abs.detail
+    g_marg = D.gate(ctx, MOTIF, run(tops), [1, 2], ["m0"], bg_mode="marginal")
+    assert g_marg.passed and "marginal" in g_marg.detail
+    # Default stays absolute (old behavior preserved, not silently swapped).
+    g_def = D.gate(ctx, MOTIF, run(tops), [1, 2], ["m0"])
+    assert not g_def.passed
+    # Unknown mode fails closed.
+    try:
+        D.gate(ctx, MOTIF, run(tops), [1, 2], ["m0"], bg_mode="bogus")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("bogus bg_mode should raise ValueError")
+
+
+def test_run_agent_threads_bg_mode() -> None:
+    # Same scripted PROPOSE passes under the marginal gate and fails
+    # under the absolute gate.
+    ctx = _ctx()
+    ctx.base_bg_fire["m0"] = 0.5
+    ctx.base_scores["m0"].update({4: 0.9, 5: 0.9, 6: 0.9, 7: 0.0})
+
+    def batch(want, plan, libs):
+        return {p: (0.9 if p != 7 else 0.0) for p in want}
+
+    replies = lambda: ["PROPOSE\n```motifql\n" + MOTIF + "\n```\nRATIONALE: x"]  # noqa: E731
+    out = D.run_agent("test", [1, 2], ctx, ["m0"], pl.DataFrame(), batch,
+                      lambda messages: (replies().pop(0), {}), bg_mode="marginal")
+    assert out["proposal"] == MOTIF
+    out = D.run_agent("test", [1, 2], ctx, ["m0"], pl.DataFrame(), batch,
+                      lambda messages: (replies().pop(0), {}))
+    assert out["proposal"] is None
+
+
 def test_run_agent_nudges_final_turn() -> None:
     ctx = _ctx()
     out = D.run_agent("test", [1], ctx, ["m0"], pl.DataFrame(),

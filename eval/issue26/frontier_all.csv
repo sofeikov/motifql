@@ -1,0 +1,2466 @@
+bg_hits,bg_n,bg_rate,caught,emit,fires_day,id,marg_rate,pass_absolute,pass_marginal,recall,text,arm,combined_pareto,pareto
+10831,20000,0.54155,"[123, 138, 223, 224]",0.5,201705.92962,a_step5,0.43255,false,false,4,"term small_n = trapezoid(1, 2, 4, 6)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n
+  score min
+  emit when score >= 0.5
+}",llm,false,
+0,20000,0.0,[],0.5,0.0,a_step6,0.0,false,false,0,"term several = ramp(1, 3)
+motif cand {
+  match (s:account) -[leg1:transfer]-> (m:account) -[leg2:transfer]-> (d:account)
+  group by s, d over m window 7d
+  where leg2.time > leg1.time and s != d
+  having count(distinct m) >= 2
+  soft count(distinct m) is several and sum(leg2.amount) ~= sum(leg1.amount) within 20%
+  score product
+  emit when score >= 0.5
+}",llm,true,
+729,20000,0.03645,"[123, 138, 224]",0.5,13576.181580000002,a_step7,0.027,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}",llm,false,
+6947,20000,0.34735,"[123, 138, 223, 224]",0.5,129374.11994,a_step8,0.26175,false,false,4,"term small_n = trapezoid(1, 2, 4, 6)
+term huge_sum = ramp(20000 USD, 30000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and sum(e.amount) is huge_sum
+  score min
+  emit when score >= 0.5
+}",llm,true,
+91,20000,0.00455,[224],0.5,1694.6948200000002,a_step9,0.00095,false,false,1,"term close_amt = trapezoid(0 USD, 0 USD, 800 USD, 2000 USD)
+term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}",llm,false,
+1433,20000,0.07165,"[123, 138]",0.5,26686.787660000005,a_step10,0.04195,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and at least 2 r: e.amount >= 10000 USD
+  score min
+  emit when score >= 0.5
+}",llm,false,
+0,20000,0.0,[],0.5,0.0,e010_w1d_h1_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e011_w1d_h1_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e012_w1d_h1_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e013_w1d_h1_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e018_w1d_h1_c2-5_amin5000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+10,20000,0.0005,[],0.3,186.23020000000002,e019_w1d_h1_c2-5_amin5000_t0.3,0.0001,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e020_w1d_h1_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e021_w1d_h1_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e042_w1d_h2_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e043_w1d_h2_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e044_w1d_h2_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e045_w1d_h2_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e050_w1d_h2_c2-5_amin5000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+10,20000,0.0005,[],0.3,186.23020000000002,e051_w1d_h2_c2-5_amin5000_t0.3,0.0001,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e052_w1d_h2_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e053_w1d_h2_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+2,20000,0.0001,[],0.5,37.24604,e068_w1d_h3_c1-3_amin10000_t0.5,0.00005,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+4,20000,0.0002,[],0.3,74.49208,e069_w1d_h3_c1-3_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e074_w1d_h3_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e075_w1d_h3_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e076_w1d_h3_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e077_w1d_h3_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e082_w1d_h3_c2-5_amin5000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+10,20000,0.0005,[],0.3,186.23020000000002,e083_w1d_h3_c2-5_amin5000_t0.3,0.0001,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e084_w1d_h3_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e085_w1d_h3_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+2,20000,0.0001,[],0.5,37.24604,e092_w1d_h3_c1-2_amin10000_t0.5,0.00005,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+4,20000,0.0002,[],0.3,74.49208,e093_w1d_h3_c1-2_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e106_w2d_h1_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e107_w2d_h1_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e108_w2d_h1_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e109_w2d_h1_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e116_w2d_h1_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e117_w2d_h1_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e138_w2d_h2_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e139_w2d_h2_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e140_w2d_h2_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e141_w2d_h2_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e148_w2d_h2_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e149_w2d_h2_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+2,20000,0.0001,[],0.5,37.24604,e164_w2d_h3_c1-3_amin10000_t0.5,0.00005,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+3,20000,0.00015,[],0.3,55.86906,e165_w2d_h3_c1-3_amin10000_t0.3,0.0001,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e170_w2d_h3_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e171_w2d_h3_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e172_w2d_h3_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e173_w2d_h3_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e180_w2d_h3_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+2,20000,0.0001,[],0.3,37.24604,e181_w2d_h3_c2-5_amin10000_t0.3,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+2,20000,0.0001,[],0.5,37.24604,e188_w2d_h3_c1-2_amin10000_t0.5,0.00005,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+3,20000,0.00015,[],0.3,55.86906,e189_w2d_h3_c1-2_amin10000_t0.3,0.0001,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e202_w4d_h1_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e203_w4d_h1_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e204_w4d_h1_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e205_w4d_h1_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e212_w4d_h1_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+5,20000,0.00025,[],0.3,93.11510000000001,e213_w4d_h1_c2-5_amin10000_t0.3,0.00015,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e234_w4d_h2_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e235_w4d_h2_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e236_w4d_h2_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e237_w4d_h2_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e244_w4d_h2_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+5,20000,0.00025,[],0.3,93.11510000000001,e245_w4d_h2_c2-5_amin10000_t0.3,0.00015,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+7,20000,0.00035,[],0.5,130.36114,e260_w4d_h3_c1-3_amin10000_t0.5,0.00025,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+9,20000,0.00045,[],0.3,167.60718,e261_w4d_h3_c1-3_amin10000_t0.3,0.00035,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e266_w4d_h3_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e267_w4d_h3_c3-8_amin5000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e268_w4d_h3_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e269_w4d_h3_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e276_w4d_h3_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+5,20000,0.00025,[],0.3,93.11510000000001,e277_w4d_h3_c2-5_amin10000_t0.3,0.00015,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+7,20000,0.00035,[],0.5,130.36114,e284_w4d_h3_c1-2_amin10000_t0.5,0.00025,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+9,20000,0.00045,[],0.3,167.60718,e285_w4d_h3_c1-2_amin10000_t0.3,0.00035,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+0,20000,0.0,[],0.5,0.0,e298_w7d_h1_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e300_w7d_h1_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e301_w7d_h1_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e308_w7d_h1_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e330_w7d_h2_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e332_w7d_h2_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e333_w7d_h2_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e340_w7d_h2_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e362_w7d_h3_c3-8_amin5000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e364_w7d_h3_c3-8_amin10000_t0.5,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+0,20000,0.0,[],0.3,0.0,e365_w7d_h3_c3-8_amin10000_t0.3,0.0,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+0,20000,0.0,[],0.5,0.0,e372_w7d_h3_c2-5_amin10000_t0.5,0.0,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+1,20000,0.00005,[],0.5,18.62302,e114_w2d_h1_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+10,20000,0.0005,[],0.3,186.23020000000002,e115_w2d_h1_c2-5_amin5000_t0.3,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+1,20000,0.00005,[],0.5,18.62302,e146_w2d_h2_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+10,20000,0.0005,[],0.3,186.23020000000002,e147_w2d_h2_c2-5_amin5000_t0.3,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+1,20000,0.00005,[],0.5,18.62302,e178_w2d_h3_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+10,20000,0.0005,[],0.3,186.23020000000002,e179_w2d_h3_c2-5_amin5000_t0.3,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+1,20000,0.00005,[],0.5,18.62302,e210_w4d_h1_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+1,20000,0.00005,[],0.5,18.62302,e242_w4d_h2_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+1,20000,0.00005,[],0.5,18.62302,e274_w4d_h3_c2-5_amin5000_t0.5,0.00005,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+3,20000,0.00015,[],0.3,55.86906,e299_w7d_h1_c3-8_amin5000_t0.3,0.00015,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+4,20000,0.0002,[],0.5,74.49208,e306_w7d_h1_c2-5_amin5000_t0.5,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+9,20000,0.00045,[],0.3,167.60718,e309_w7d_h1_c2-5_amin10000_t0.3,0.00045,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+3,20000,0.00015,[],0.3,55.86906,e331_w7d_h2_c3-8_amin5000_t0.3,0.00015,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+4,20000,0.0002,[],0.5,74.49208,e338_w7d_h2_c2-5_amin5000_t0.5,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+9,20000,0.00045,[],0.3,167.60718,e341_w7d_h2_c2-5_amin10000_t0.3,0.00045,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+13,20000,0.00065,[],0.5,242.09926000000002,e356_w7d_h3_c1-3_amin10000_t0.5,0.00065,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+3,20000,0.00015,[],0.3,55.86906,e363_w7d_h3_c3-8_amin5000_t0.3,0.00015,false,false,0,"term c = ramp(3, 8)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+4,20000,0.0002,[],0.5,74.49208,e370_w7d_h3_c2-5_amin5000_t0.5,0.0002,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+9,20000,0.00045,[],0.3,167.60718,e373_w7d_h3_c2-5_amin10000_t0.3,0.00045,false,false,0,"term c = ramp(2, 5)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+13,20000,0.00065,[],0.5,242.09926000000002,e380_w7d_h3_c1-2_amin10000_t0.5,0.00065,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+12,20000,0.0006,[],0.5,223.47624,e066_w1d_h3_c1-3_amin5000_t0.5,0.00025,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+16,20000,0.0008,[],0.3,297.96832,e067_w1d_h3_c1-3_amin5000_t0.3,0.00035,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+12,20000,0.0006,[],0.5,223.47624,e090_w1d_h3_c1-2_amin5000_t0.5,0.00025,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+16,20000,0.0008,[],0.3,297.96832,e091_w1d_h3_c1-2_amin5000_t0.3,0.00035,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 1d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+13,20000,0.00065,[],0.5,242.09926000000002,e162_w2d_h3_c1-3_amin5000_t0.5,0.0003,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+15,20000,0.00075,[],0.3,279.3453,e163_w2d_h3_c1-3_amin5000_t0.3,0.00035,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+13,20000,0.00065,[],0.5,242.09926000000002,e186_w2d_h3_c1-2_amin5000_t0.5,0.0003,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+15,20000,0.00075,[],0.3,279.3453,e187_w2d_h3_c1-2_amin5000_t0.3,0.00035,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+20,20000,0.001,[],0.3,372.46040000000005,e357_w7d_h3_c1-3_amin10000_t0.3,0.001,false,false,0,"term c = ramp(1, 3)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+20,20000,0.001,[],0.3,372.46040000000005,e381_w7d_h3_c1-2_amin10000_t0.3,0.001,false,false,0,"term c = ramp(1, 2)
+term amt = ramp(10000 USD, 20000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+16,20000,0.0008,[138],0.3,297.96832,e211_w4d_h1_c2-5_amin5000_t0.3,0.00055,false,false,1,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+16,20000,0.0008,[138],0.3,297.96832,e243_w4d_h2_c2-5_amin5000_t0.3,0.00055,false,false,1,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+16,20000,0.0008,[138],0.3,297.96832,e275_w4d_h3_c2-5_amin5000_t0.3,0.00055,false,false,1,"term c = ramp(2, 5)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,true,true
+110,20000,0.0055,"[123, 138]",0.5,2048.5322,e194_w4d_h1_c1-3_amin5000_t0.5,0.00505,false,false,2,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+110,20000,0.0055,"[123, 138]",0.5,2048.5322,e226_w4d_h2_c1-3_amin5000_t0.5,0.00505,false,false,2,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,true,true
+134,20000,0.0067,"[123, 138]",0.3,2495.48468,e195_w4d_h1_c1-3_amin5000_t0.3,0.00615,false,false,2,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+134,20000,0.0067,"[123, 138]",0.5,2495.48468,e218_w4d_h1_c1-2_amin5000_t0.5,0.00625,false,false,2,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+134,20000,0.0067,"[123, 138]",0.3,2495.48468,e227_w4d_h2_c1-3_amin5000_t0.3,0.00615,false,false,2,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+134,20000,0.0067,"[123, 138]",0.5,2495.48468,e250_w4d_h2_c1-2_amin5000_t0.5,0.00625,false,false,2,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+164,20000,0.0082,"[123, 138]",0.3,3054.1752800000004,e219_w4d_h1_c1-2_amin5000_t0.3,0.00765,false,false,2,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+164,20000,0.0082,"[123, 138]",0.3,3054.1752800000004,e251_w4d_h2_c1-2_amin5000_t0.3,0.00765,false,false,2,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+8390,20000,0.4195,"[123, 138, 224]",0.5,156247.1378,e222_w4d_h1_c1-2_aavg5000_t0.5,0.15045,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+8390,20000,0.4195,"[123, 138, 224]",0.5,156247.1378,e254_w4d_h2_c1-2_aavg5000_t0.5,0.15045,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+8601,20000,0.43005,"[123, 138, 224]",0.3,160176.59502,e199_w4d_h1_c1-3_aavg5000_t0.3,0.1539,false,false,3,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+8601,20000,0.43005,"[123, 138, 224]",0.3,160176.59502,e231_w4d_h2_c1-3_aavg5000_t0.3,0.1539,false,false,3,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+8694,20000,0.4347,"[123, 138, 224]",0.3,161908.53588,e223_w4d_h1_c1-2_aavg5000_t0.3,0.1584,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+8694,20000,0.4347,"[123, 138, 224]",0.3,161908.53588,e255_w4d_h2_c1-2_aavg5000_t0.3,0.1584,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+11621,20000,0.58105,"[123, 138, 224]",0.5,216418.11542,e318_w7d_h1_c1-2_aavg5000_t0.5,0.28755,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+11621,20000,0.58105,"[123, 138, 224]",0.5,216418.11542,e350_w7d_h2_c1-2_aavg5000_t0.5,0.28755,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+11951,20000,0.59755,"[123, 138, 224]",0.3,222563.71202000004,e295_w7d_h1_c1-3_aavg5000_t0.3,0.29655,false,false,3,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+11951,20000,0.59755,"[123, 138, 224]",0.3,222563.71202000004,e327_w7d_h2_c1-3_aavg5000_t0.3,0.29655,false,false,3,"term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+12059,20000,0.60295,"[123, 138, 224]",0.3,224574.99818,e319_w7d_h1_c1-2_aavg5000_t0.3,0.3013,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+12059,20000,0.60295,"[123, 138, 224]",0.3,224574.99818,e351_w7d_h2_c1-2_aavg5000_t0.3,0.3013,false,false,3,"term c = ramp(1, 2)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c and avg(e.amount) is amt
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.5,266495.41620000004,e096_w2d_h1_c1-3_anone_t0.5,0.3435,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.3,266495.41620000004,e097_w2d_h1_c1-3_anone_t0.3,0.3435,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.5,266495.41620000004,e120_w2d_h1_c1-2_anone_t0.5,0.3435,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.3,266495.41620000004,e121_w2d_h1_c1-2_anone_t0.3,0.3435,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.5,266495.41620000004,e128_w2d_h2_c1-3_anone_t0.5,0.3435,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.3,266495.41620000004,e129_w2d_h2_c1-3_anone_t0.3,0.3435,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.5,266495.41620000004,e152_w2d_h2_c1-2_anone_t0.5,0.3435,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+14310,20000,0.7155,"[123, 223, 224]",0.3,266495.41620000004,e153_w2d_h2_c1-2_anone_t0.3,0.3435,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.3,293182.20386,e305_w7d_h1_c2-5_anone_t0.3,0.39755,false,false,3,"term c = ramp(2, 5)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.3,293182.20386,e337_w7d_h2_c2-5_anone_t0.3,0.39755,false,false,3,"term c = ramp(2, 5)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.5,293182.20386,e352_w7d_h3_c1-3_anone_t0.5,0.39755,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.3,293182.20386,e353_w7d_h3_c1-3_anone_t0.3,0.39755,false,false,3,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.3,293182.20386,e369_w7d_h3_c2-5_anone_t0.3,0.39755,false,false,3,"term c = ramp(2, 5)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.5,293182.20386,e376_w7d_h3_c1-2_anone_t0.5,0.39755,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+15743,20000,0.78715,"[123, 138, 223]",0.3,293182.20386,e377_w7d_h3_c1-2_anone_t0.3,0.39755,false,false,3,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 3
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+16543,20000,0.82715,"[123, 138, 223, 224]",0.5,308080.61986000004,e192_w4d_h1_c1-3_anone_t0.5,0.43255,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.3,308080.61986000004,e193_w4d_h1_c1-3_anone_t0.3,0.43255,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.5,308080.61986000004,e216_w4d_h1_c1-2_anone_t0.5,0.43255,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.3,308080.61986000004,e217_w4d_h1_c1-2_anone_t0.3,0.43255,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.5,308080.61986000004,e224_w4d_h2_c1-3_anone_t0.5,0.43255,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.3,308080.61986000004,e225_w4d_h2_c1-3_anone_t0.3,0.43255,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.5,308080.61986000004,e248_w4d_h2_c1-2_anone_t0.5,0.43255,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,true
+16543,20000,0.82715,"[123, 138, 223, 224]",0.3,308080.61986000004,e249_w4d_h2_c1-2_anone_t0.3,0.43255,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,true
+19422,20000,0.9711,"[123, 138, 223, 224]",0.5,361696.29444,e288_w7d_h1_c1-3_anone_t0.5,0.5701,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.3,361696.29444,e289_w7d_h1_c1-3_anone_t0.3,0.5701,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.5,361696.29444,e312_w7d_h1_c1-2_anone_t0.5,0.5701,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.3,361696.29444,e313_w7d_h1_c1-2_anone_t0.3,0.5701,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.5,361696.29444,e320_w7d_h2_c1-3_anone_t0.5,0.5701,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.3,361696.29444,e321_w7d_h2_c1-3_anone_t0.3,0.5701,false,false,4,"term c = ramp(1, 3)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.5,361696.29444,e344_w7d_h2_c1-2_anone_t0.5,0.5701,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.5
+}
+",enum,false,false
+19422,20000,0.9711,"[123, 138, 223, 224]",0.3,361696.29444,e345_w7d_h2_c1-2_anone_t0.3,0.5701,false,false,4,"term c = ramp(1, 2)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is c
+  score product
+  emit when score >= 0.3
+}
+",enum,false,false
+63,20000,0.00315,[224],0.6,1173.25026,h_s2_2d_48h_t0.6,0.00055,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,true
+63,20000,0.00315,[224],0.6,1173.25026,h_s2_7d_48h_t0.6,0.00055,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,true
+63,20000,0.00315,[224],0.6,1173.25026,h_s2_10d_48h_t0.6,0.00055,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,true
+65,20000,0.00325,[224],0.5,1210.4963,h_s2_2d_48h_t0.5,0.0006,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+74,20000,0.0037,[224],0.6,1378.1034800000002,h_s2_2d_72h_t0.6,0.00075,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+65,20000,0.00325,[224],0.5,1210.4963,h_s2_7d_48h_t0.5,0.0006,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+74,20000,0.0037,[224],0.6,1378.1034800000002,h_s2_7d_72h_t0.6,0.00075,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+65,20000,0.00325,[224],0.5,1210.4963,h_s2_10d_48h_t0.5,0.0006,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 48h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+74,20000,0.0037,[224],0.6,1378.1034800000002,h_s2_10d_72h_t0.6,0.00075,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+91,20000,0.00455,[224],0.5,1694.6948200000002,h_s2_2d_72h_t0.5,0.00095,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+91,20000,0.00455,[224],0.5,1694.6948200000002,h_s2_2d_120h_t0.5,0.00095,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+91,20000,0.00455,[224],0.6,1694.6948200000002,h_s2_2d_120h_t0.6,0.00095,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 2d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+91,20000,0.00455,[224],0.5,1694.6948200000002,h_s2_7d_72h_t0.5,0.00095,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+91,20000,0.00455,[224],0.5,1694.6948200000002,h_s2_10d_72h_t0.5,0.00095,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+131,20000,0.00655,[224],0.6,2439.61562,h_s2_7d_120h_t0.6,0.00155,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+131,20000,0.00655,[224],0.6,2439.61562,h_s2_10d_120h_t0.6,0.00155,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.6
+}
+",hybrid,false,false
+162,20000,0.0081,[224],0.5,3016.92924,h_s2_7d_120h_t0.5,0.0021,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+162,20000,0.0081,[224],0.5,3016.92924,h_s2_10d_120h_t0.5,0.0021,false,false,1,"term tight = trapezoid(0h, 0h, 24h, 120h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 10d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}
+",hybrid,false,false
+394,20000,0.0197,"[123, 224]",0.5,7337.46988,h_s1_2d_6000_3-4_t0.5,0.01345,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,true
+420,20000,0.021,"[123, 224]",0.3,7821.668400000001,h_s1_2d_6000_3-4_t0.3,0.01415,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+468,20000,0.0234,"[123, 138]",0.5,8715.57336,h_s1_4d_10000_3-4_t0.5,0.01825,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+480,20000,0.024,"[123, 138]",0.3,8939.0496,h_s1_4d_10000_3-4_t0.3,0.01885,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+445,20000,0.02225,"[123, 224]",0.5,8287.2439,h_s1_2d_6000_4-6_t0.5,0.0144,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+481,20000,0.02405,"[123, 224]",0.3,8957.67262,h_s1_2d_6000_4-6_t0.3,0.01525,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+544,20000,0.0272,"[123, 138]",0.5,10130.92288,h_s1_4d_10000_4-6_t0.5,0.0198,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+552,20000,0.0276,"[123, 138]",0.5,10279.90704,h_s1_4d_10000_6-9_t0.5,0.0193,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+565,20000,0.02825,"[123, 138]",0.3,10522.006300000001,h_s1_4d_10000_4-6_t0.3,0.0207,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+575,20000,0.02875,"[123, 224]",0.5,10708.2365,h_s1_2d_3000_3-4_t0.5,0.01985,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+661,20000,0.03305,"[123, 138]",0.3,12309.816220000002,h_s1_4d_10000_6-9_t0.3,0.02145,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+649,20000,0.03245,"[123, 224]",0.3,12086.33998,h_s1_2d_3000_3-4_t0.3,0.02265,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+655,20000,0.03275,"[123, 224]",0.5,12198.0781,h_s1_2d_3000_6-9_t0.5,0.01985,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+668,20000,0.0334,"[123, 224]",0.5,12440.17736,h_s1_2d_3000_4-6_t0.5,0.0217,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+734,20000,0.0367,"[123, 138]",0.5,13669.296680000001,h_s1_4d_6000_6-9_t0.5,0.02575,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+773,20000,0.03865,"[123, 224]",0.3,14395.59446,h_s1_2d_3000_4-6_t0.3,0.0253,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+813,20000,0.04065,"[123, 224]",0.3,15140.51526,h_s1_2d_3000_6-9_t0.3,0.0244,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 2d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+901,20000,0.04505,"[123, 138]",0.3,16779.34102,h_s1_4d_6000_6-9_t0.3,0.029,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+856,20000,0.0428,"[123, 138]",0.5,15941.30512,h_s1_7d_10000_3-4_t0.5,0.0386,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+876,20000,0.0438,"[123, 138]",0.3,16313.76552,h_s1_7d_10000_3-4_t0.3,0.0396,false,false,2,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1041,20000,0.05205,"[123, 138]",0.5,19386.56382,h_s1_7d_10000_4-6_t0.5,0.0452,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1085,20000,0.05425,"[123, 138]",0.5,20205.976700000003,h_s1_7d_10000_6-9_t0.5,0.04605,false,false,2,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1075,20000,0.05375,"[123, 138]",0.3,20019.7465,h_s1_7d_10000_4-6_t0.3,0.0467,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(10000 USD, 14000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+609,20000,0.03045,"[123, 138, 224]",0.5,11341.41918,h_s1_4d_6000_3-4_t0.5,0.02435,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,true,true
+638,20000,0.0319,"[123, 138, 224]",0.3,11881.48676,h_s1_4d_6000_3-4_t0.3,0.02545,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+729,20000,0.03645,"[123, 138, 224]",0.5,13576.181580000002,h_s1_4d_6000_4-6_t0.5,0.027,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+783,20000,0.03915,"[123, 138, 224]",0.3,14581.82466,h_s1_4d_6000_4-6_t0.3,0.0285,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+848,20000,0.0424,"[123, 138, 224]",0.5,15792.320960000001,h_s1_4d_3000_3-4_t0.5,0.0347,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+928,20000,0.0464,"[123, 138, 224]",0.3,17282.16256,h_s1_4d_3000_3-4_t0.3,0.0382,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1069,20000,0.05345,"[123, 138, 224]",0.5,19908.00838,h_s1_4d_3000_6-9_t0.5,0.0368,false,false,3,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1051,20000,0.05255,"[123, 138, 224]",0.5,19572.79402,h_s1_4d_3000_4-6_t0.5,0.0393,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1059,20000,0.05295,"[123, 138, 224]",0.5,19721.77818,h_s1_7d_6000_3-4_t0.5,0.04785,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1188,20000,0.0594,"[123, 138, 224]",0.3,22124.147760000003,h_s1_4d_3000_4-6_t0.3,0.0443,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1099,20000,0.05495,"[123, 138, 224]",0.3,20466.69898,h_s1_7d_6000_3-4_t0.3,0.0496,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1341,20000,0.06705,"[123, 138, 224]",0.3,24973.469820000002,h_s1_4d_3000_6-9_t0.3,0.0443,false,false,3,"term small_n = trapezoid(1, 3, 6, 9)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1321,20000,0.06605,"[123, 138, 224]",0.5,24601.009420000002,h_s1_7d_6000_4-6_t0.5,0.0574,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1330,20000,0.0665,"[123, 138, 224]",0.5,24768.6166,h_s1_7d_3000_3-4_t0.5,0.0598,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}
+",hybrid,false,false
+1411,20000,0.07055,"[123, 138, 224]",0.3,26277.081220000004,h_s1_7d_6000_4-6_t0.3,0.06085,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false
+1412,20000,0.0706,"[123, 138, 224]",0.3,26295.70424,h_s1_7d_3000_3-4_t0.3,0.0633,false,false,3,"term small_n = trapezoid(1, 2, 3, 4)
+term big = ramp(3000 USD, 7000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 7d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.3
+}
+",hybrid,false,false

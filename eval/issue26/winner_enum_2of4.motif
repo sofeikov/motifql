@@ -1,0 +1,10 @@
+term c = ramp(1, 3)
+term amt = ramp(5000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 1
+  soft count(distinct r) is c and min(e.amount) is amt
+  score product
+  emit when score >= 0.5
+}

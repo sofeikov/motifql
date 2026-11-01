@@ -96,12 +96,15 @@ def main(
     data: Annotated[Path, typer.Option(help="Prepped dataset directory.")] = Path("data/hi-small"),
     run_agent: Annotated[bool, typer.Option(help="Run the agent loop (needs MUSE_KEY).")] = False,
     pattern: Annotated[str, typer.Option(help="Target pattern for the agent run.")] = "FAN-OUT",
+    bg_mode: Annotated[str, typer.Option(help="Gate background bar: absolute or marginal.")] = "absolute",
     max_steps: Annotated[int, typer.Option(help="Agent step budget.")] = D.MAX_STEPS,
     bg_n: Annotated[int, typer.Option(help="Background sample size.")] = BG_N,
     workers: Annotated[int, typer.Option(help="Worker processes (1 = serial).")] = 16,
     out: Annotated[Path, typer.Option(help="Directory for outputs.")] = Path("eval/results"),
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if bg_mode not in ("absolute", "marginal"):
+        raise SystemExit(f"--bg-mode {bg_mode!r}: use absolute or marginal")
     out.mkdir(parents=True, exist_ok=True)
 
     log.info("[1/4] loading transfers, ground truth, splits")
@@ -190,10 +193,15 @@ def main(
     med = float(np.median([ctx.base_bg_fire[m] for m in MOTIFS]))
     allowed = max(med * D.GATE_BG_MULT, 2 / len(ctx.bg_pos))
     need = min(D.GATE_MIN_CATCHES, len(cluster))
-    gate_desc = (f"PROPOSE only a motif catching at least {need} of the {len(cluster)} "
-                 f"cluster instances with background fire at or below {allowed:.4f} "
+    bg_clause = (f"with background fire at or below {allowed:.4f} "
                  f"({allowed * len(ctx.bg_pos):.0f}/{len(ctx.bg_pos)} on the sample; "
-                 f"base median {med:.4f}). If no TRY passes both bars, reply DONE "
+                 f"base median {med:.4f})")
+    if bg_mode == "marginal":
+        bg_clause += (" — counting only background fires where NO current "
+                      "motif fires (union-marginal: re-firing already-flagged "
+                      "background is free)")
+    gate_desc = (f"PROPOSE only a motif catching at least {need} of the {len(cluster)} "
+                 f"cluster instances {bg_clause}. If no TRY passes both bars, reply DONE "
                  f"instead of proposing — a failing PROPOSE wastes the run.")
     slug = pattern.lower().replace("-", "_")
     live: list[str] = []
@@ -201,7 +209,7 @@ def main(
         res = D.run_agent(desc, cluster, ctx, MOTIFS, df, batch,
                           lambda messages: spark.complete(messages),
                           max_steps=max_steps, gate_desc=gate_desc,
-                          transcript_out=live)
+                          transcript_out=live, bg_mode=bg_mode)
     except spark.SparkError as exc:
         (out / f"discover_{slug}_transcript.md").write_text(
             "# Discovery transcript: " + pattern + " (INTERRUPTED)\n\n"
@@ -235,27 +243,40 @@ def main(
     prop_tops = batch(sorted({p for ps in ho_members.values() for p in ps} | set(ho_bg_pos)),
                       compiled.plan, compiled.libs)
     emit = compiled.plan.emit
-    caught = [i for i, ps in ho_members.items()
-              if max(prop_tops[p] for p in ps) >= emit]
+    # Holdout filter is split == "holdout", i.e. the completable set
+    # (splits.py), so these are newly-caught COMPLETABLE instances.
+    caught = D.caught_instances(prop_tops, emit, ho_members, list(ho_members))
     fire = sum(prop_tops[p] >= emit for p in ho_bg_pos) / len(ho_bg_pos)
-    log.info("  proposal holdout: %d/%d instances, bg fire %.4f",
-             len(caught), len(ho_members), fire)
     base_rows = []
+    base_caught_union: set[int] = set()
+    base_fire_union: set[int] = set()
     for m in MOTIFS:
         tops = batch(sorted({p for ps in ho_members.values() for p in ps} | set(ho_bg_pos)),
                      plans[m], libs)
-        c = [i for i, ps in ho_members.items()
-             if max(tops[p] for p in ps) >= plans[m].emit]
+        c = D.caught_instances(tops, plans[m].emit, ho_members, list(ho_members))
         f = sum(tops[p] >= plans[m].emit for p in ho_bg_pos) / len(ho_bg_pos)
+        base_caught_union.update(c)
+        base_fire_union.update(p for p in ho_bg_pos if tops[p] >= plans[m].emit)
         base_rows.append({"motif": m, "caught": len(c), "n": len(ho_members),
                           "bg_fire": round(f, 4)})
         log.info("  %-18s holdout: %d/%d bg fire %.4f", m, len(c), len(ho_members), f)
+    new = D.newly_caught(caught, base_caught_union)
+    marg_fire = (sum(1 for p in ho_bg_pos
+                     if prop_tops[p] >= emit and p not in base_fire_union)
+                 / len(ho_bg_pos))
+    log.info("  proposal holdout: %d/%d instances, bg fire %.4f (marginal %.4f)",
+             len(caught), len(ho_members), fire, marg_fire)
     pl.from_dicts([{"motif": "PROPOSAL", "caught": len(caught), "n": len(ho_members),
-                    "bg_fire": round(fire, 4)}] + base_rows
+                    "bg_fire": round(fire, 4),
+                    "new_caught": len(new), "marginal_bg_fire": round(marg_fire, 4)}]
+                  + [dict(r, new_caught=None, marginal_bg_fire=None) for r in base_rows]
                   ).write_csv(out / f"discover_{slug}_holdout.csv")
-    best_base = max([r["caught"] for r in base_rows] or [0])
-    log.info("  gain vs best current motif: %+d instances (%d vs %d)",
-             len(caught) - best_base, len(caught), best_base)
+    # Issue #26: union gain supersedes the old max-based gain
+    # (caught(proposal) − max caught(motif)), which scores a
+    # complementary specialist ≤ 0 and an overlapping re-catch > 0.
+    log.info("  gain vs union of current motifs: %+d instances "
+             "(new %s of %d caught; base union catches %d)",
+             len(new), new, len(caught), len(base_caught_union))
     log.info("done")
 
 

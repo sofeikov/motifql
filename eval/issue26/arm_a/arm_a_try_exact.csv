@@ -1,0 +1,58 @@
+bg_hits,bg_n,bg_rate,caught,emit,fires_day,id,marg_rate,pass_absolute,pass_marginal,recall,text
+10831,20000,0.54155,"[123, 138, 223, 224]",0.5,201705.92962,a_step5,0.43255,false,false,4,"term small_n = trapezoid(1, 2, 4, 6)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n
+  score min
+  emit when score >= 0.5
+}"
+0,20000,0.0,[],0.5,0.0,a_step6,0.0,false,false,0,"term several = ramp(1, 3)
+motif cand {
+  match (s:account) -[leg1:transfer]-> (m:account) -[leg2:transfer]-> (d:account)
+  group by s, d over m window 7d
+  where leg2.time > leg1.time and s != d
+  having count(distinct m) >= 2
+  soft count(distinct m) is several and sum(leg2.amount) ~= sum(leg1.amount) within 20%
+  score product
+  emit when score >= 0.5
+}"
+729,20000,0.03645,"[123, 138, 224]",0.5,13576.181580000002,a_step7,0.027,false,false,3,"term small_n = trapezoid(1, 2, 4, 6)
+term big = ramp(6000 USD, 10000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and most r: e.amount is big
+  score product
+  emit when score >= 0.5
+}"
+6947,20000,0.34735,"[123, 138, 223, 224]",0.5,129374.11994,a_step8,0.26175,false,false,4,"term small_n = trapezoid(1, 2, 4, 6)
+term huge_sum = ramp(20000 USD, 30000 USD)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and sum(e.amount) is huge_sum
+  score min
+  emit when score >= 0.5
+}"
+91,20000,0.00455,[224],0.5,1694.6948200000002,a_step9,0.00095,false,false,1,"term close_amt = trapezoid(0 USD, 0 USD, 800 USD, 2000 USD)
+term tight = trapezoid(0h, 0h, 24h, 72h)
+motif cand {
+  match (x1:account) -[a:transfer]-> (y1:account), (x1:account) -[b:transfer]-> (y2:account), (x2:account) -[c:transfer]-> (y1:account), (x2:account) -[d:transfer]-> (y2:account)
+  where x1 != x2 and y1 != y2 and span(all) <= 7d
+  soft span(all) is tight
+  score min
+  emit when score >= 0.5
+}"
+1433,20000,0.07165,"[123, 138]",0.5,26686.787660000005,a_step10,0.04195,false,false,2,"term small_n = trapezoid(1, 2, 4, 6)
+motif cand {
+  match (s:account) -[e:transfer]-> (r:account)
+  group by s over r window 4d
+  having count(distinct r) >= 2
+  soft count(distinct r) is small_n and at least 2 r: e.amount >= 10000 USD
+  score min
+  emit when score >= 0.5
+}"

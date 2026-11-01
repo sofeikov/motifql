@@ -12,6 +12,17 @@ Gate (constants below, tuned from measured background rates before
 the runs): a proposal must compile, catch missed-cluster instances
 the current motifs miss, and hold background fire at or below the
 current-motif level.
+
+Background is gated two ways (`bg_mode`): `absolute` charges every
+proposal fire on the background sample; `marginal` (issue #26)
+charges only fires on background NO current motif fires on — the
+fairer bar for a specialist complementing trigger-happy generalists
+(fan_out fires 28.6% bg while the absolute gate allows 0.095%).
+
+Gain is always union-based: instances the proposal catches minus the
+union of instances any current motif catches. The old max-based gain
+(caught(proposal) − max caught(motif)) is superseded — it scores a
+complementary specialist ≤ 0 and an overlapping re-catch > 0.
 """
 
 from __future__ import annotations
@@ -61,6 +72,42 @@ def list_missed(ctx: DiscoveryCtx, motifs: list[str]) -> list[int]:
                        for m in motifs for p in positions)]
 
 
+def caught_instances(tops: dict, emit: float, member_pos: dict[int, list[int]],
+                     instances: list[int]) -> list[int]:
+    """Instances with any member anchor at/above `emit` in `tops`."""
+    return [iid for iid in instances
+            if max(tops[p] for p in member_pos[iid]) >= emit]
+
+
+def union_caught(ctx: DiscoveryCtx, motifs: list[str],
+                 instances: list[int]) -> set[int]:
+    """Instances ANY current motif emits on (union over motifs)."""
+    return {iid for iid in instances
+            if any(ctx.base_scores[m].get(p, 0.0) >= ctx.base_emit[m]
+                   for m in motifs for p in ctx.member_pos[iid])}
+
+
+def newly_caught(proposal_caught: list[int], base_union) -> list[int]:
+    """Proposal catches minus the current-motif union (order kept)."""
+    base = set(base_union)
+    return [i for i in proposal_caught if i not in base]
+
+
+def gain_vs_union(proposal_caught: list[int], base_union) -> int:
+    """Union gain: genuinely new instances, never a re-catch credit."""
+    return len(newly_caught(proposal_caught, base_union))
+
+
+def marginal_bg_fire(prop_tops: dict, prop_emit: float,
+                     ctx: DiscoveryCtx, motifs: list[str]) -> float:
+    """Share of bg anchors where the proposal fires but no base motif does."""
+    n = max(1, len(ctx.bg_pos))
+    return sum(1 for p in ctx.bg_pos
+               if prop_tops.get(p, 0.0) >= prop_emit
+               and not any(ctx.base_scores[m].get(p, 0.0) >= ctx.base_emit[m]
+                           for m in motifs)) / n
+
+
 def show_instance(ctx: DiscoveryCtx, df, iid: int, motifs: list[str],
                   max_rows: int = 40) -> str:
     """Member transfer table plus current motifs' best scores per member."""
@@ -78,11 +125,14 @@ def show_instance(ctx: DiscoveryCtx, df, iid: int, motifs: list[str],
     return "\n".join(lines)
 
 
-def try_motif(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int]) -> str:
+def try_motif(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int],
+              motifs: list[str] | None = None) -> str:
     """Compile + train replay: recall on the cluster, bg fire, FP sample.
 
     `batch_score(positions, plan, libs)` returns {pos: top_score};
     batching lets the driver score thousands of anchors per call.
+    With `motifs`, also reports union-marginal background fire (fires
+    on background no current motif fires on).
     """
     compiled, errors = repair.try_compile(text)
     if compiled is None:
@@ -91,14 +141,17 @@ def try_motif(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int]) -> 
     emit = plan.emit
     want = sorted({p for iid in cluster for p in ctx.member_pos[iid]} | set(ctx.bg_pos))
     tops = batch_score(want, plan, compiled.libs)
-    caught = [iid for iid in cluster
-              if max(tops[p] for p in ctx.member_pos[iid]) >= emit]
+    caught = caught_instances(tops, emit, ctx.member_pos, cluster)
     means = [max(tops[p] for p in ctx.member_pos[iid]) for iid in cluster]
     bg_hits = sorted(p for p in ctx.bg_pos if tops[p] >= emit)
     out = [f"COMPILED. emit={emit:.2f} cluster recall {len(caught)}/{len(cluster)} "
            f"(mean top {np.mean(means):.3f})",
            f"background fire {len(bg_hits)}/{len(ctx.bg_pos)} "
            f"({100 * len(bg_hits) / max(1, len(ctx.bg_pos)):.3f}%)"]
+    if motifs:
+        marg = marginal_bg_fire(tops, emit, ctx, motifs)
+        out.append(f"marginal background fire {marg * len(ctx.bg_pos):.0f}/{len(ctx.bg_pos)} "
+                   f"({100 * marg:.3f}%; fires where no current motif fires)")
     for p in bg_hits[:3]:
         out.append(f"  FP tid={ctx.transfer_ids[p]} score={tops[p]:.2f}")
     return "\n".join(out)
@@ -115,17 +168,25 @@ class GateResult:
 
 
 def gate(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int],
-         motifs: list[str]) -> GateResult:
-    """Train-side gate: compile + catch misses + hold background fire."""
+         motifs: list[str], bg_mode: str = "absolute") -> GateResult:
+    """Train-side gate: compile + catch misses + hold background fire.
+
+    `bg_mode="absolute"` charges every proposal fire on the background
+    sample; `"marginal"` charges only fires where no current motif
+    fires (same allowance either way). Unknown modes raise.
+    """
+    if bg_mode not in ("absolute", "marginal"):
+        raise ValueError(f"bg_mode {bg_mode!r}: use `absolute` or `marginal`")
     compiled, errors = repair.try_compile(text)
     if compiled is None:
         return GateResult(False, "does not compile: " + "; ".join(errors))
     plan = compiled.plan
     want = sorted({p for iid in cluster for p in ctx.member_pos[iid]} | set(ctx.bg_pos))
     tops = batch_score(want, plan, compiled.libs)
-    catches = [iid for iid in cluster
-               if max(tops[p] for p in ctx.member_pos[iid]) >= plan.emit]
-    bg_fire = sum(tops[p] >= plan.emit for p in ctx.bg_pos) / max(1, len(ctx.bg_pos))
+    catches = caught_instances(tops, plan.emit, ctx.member_pos, cluster)
+    abs_fire = sum(tops[p] >= plan.emit for p in ctx.bg_pos) / max(1, len(ctx.bg_pos))
+    bg_fire = abs_fire if bg_mode == "absolute" else marginal_bg_fire(
+        tops, plan.emit, ctx, motifs)
     base_med = float(np.median([ctx.base_bg_fire[m] for m in motifs])) if motifs else 0.0
     need = min(GATE_MIN_CATCHES, len(cluster))
     if len(catches) < need:
@@ -134,12 +195,13 @@ def gate(ctx: DiscoveryCtx, text: str, batch_score, cluster: list[int],
     # Floor of 2 background fires: with a 20k sample, 0 vs 2 is noise,
     # so a zero base median must not veto every proposal.
     allowed = max(base_med * GATE_BG_MULT, 2 / max(1, len(ctx.bg_pos)))
+    tag = "marginal bg fire" if bg_mode == "marginal" else "bg fire"
     if bg_fire > allowed + 1e-9:
-        return GateResult(False, f"bg fire {bg_fire:.4f} over allowed "
+        return GateResult(False, f"{tag} {bg_fire:.4f} over allowed "
                                  f"{allowed:.4f} (base median {base_med:.4f})",
                           catches, bg_fire)
     return GateResult(True, f"catches {len(catches)}/{len(cluster)} "
-                            f"bg fire {bg_fire:.4f} <= {allowed:.4f}",
+                            f"{tag} {bg_fire:.4f} <= {allowed:.4f}",
                       catches, bg_fire)
 
 
@@ -199,11 +261,13 @@ def agent_system_prompt(cluster_desc: str, gate_desc: str = "") -> str:
 def run_agent(cluster_desc: str, cluster: list[int], ctx: DiscoveryCtx,
               motifs: list[str], df, batch_score, complete,
               max_steps: int = MAX_STEPS, gate_desc: str = "",
-              transcript_out: list | None = None) -> dict:
+              transcript_out: list | None = None,
+              bg_mode: str = "absolute") -> dict:
     """Text-protocol agent loop; returns transcript + best proposal.
 
     Steps append to `transcript_out` live when given, so the driver
     can persist a partial transcript if the run dies mid-loop.
+    `bg_mode` selects the gate's background bar (absolute/marginal).
     """
     messages = [{"role": "system", "content": agent_system_prompt(cluster_desc, gate_desc)},
                 {"role": "user", "content": f"Missed cluster ({len(cluster)} instances): "
@@ -216,7 +280,7 @@ def run_agent(cluster_desc: str, cluster: list[int], ctx: DiscoveryCtx,
         kind, motif_text, iid = parse_action(text)
         try:
             result, g = _dispatch(kind, motif_text, iid, ctx, motifs, df,
-                                  batch_score, cluster)
+                                  batch_score, cluster, bg_mode)
         except Exception as exc:
             # Fail closed: a tool crash becomes feedback, never an
             # escaped exception (and never a silent holdout read).
@@ -234,18 +298,19 @@ def run_agent(cluster_desc: str, cluster: list[int], ctx: DiscoveryCtx,
     return {"transcript": transcript, "proposal": best["text"], "gate": best["gate"]}
 
 
-def _dispatch(kind, motif_text, iid, ctx, motifs, df, batch_score, cluster):
+def _dispatch(kind, motif_text, iid, ctx, motifs, df, batch_score, cluster,
+              bg_mode: str = "absolute"):
     """Execute one parsed action; returns (result_text, gate_or_None)."""
     if kind == "SHOW" and iid in ctx.member_tid:
         return show_instance(ctx, df, iid, motifs), None
     if kind == "SHOW":
         return f"unknown instance {iid}; cluster is {cluster}.", None
     if kind == "TRY" and motif_text:
-        return try_motif(ctx, motif_text, batch_score, cluster), None
+        return try_motif(ctx, motif_text, batch_score, cluster, motifs), None
     if kind in ("TRY", "PROPOSE") and not motif_text:
         return "no ```motifql block found; send the motif in one.", None
     if kind == "PROPOSE":
-        g = gate(ctx, motif_text or "", batch_score, cluster, motifs)
+        g = gate(ctx, motif_text or "", batch_score, cluster, motifs, bg_mode)
         return f"GATE {'PASS' if g.passed else 'FAIL'}: {g.detail}", g
     if kind == "DONE":
         return "noted.", None
