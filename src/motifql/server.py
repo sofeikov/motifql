@@ -72,6 +72,8 @@ class ResultOut(BaseModel):
     explanation: list[dict] = Field(default_factory=list)
     truncated: bool = False
     expansions: int = 0
+    narrative: str | None = None
+    narrative_weakest_step: int | None = None
 
 
 def _hop_out(h: WitnessHop) -> HopOut:
@@ -80,12 +82,14 @@ def _hop_out(h: WitnessHop) -> HopOut:
                   to_bank=h.to_bank, to_account=h.to_account, amount=h.amount)
 
 
-def _result_out(r: MotifResult) -> ResultOut:
+def _result_out(r: MotifResult, narrative: str | None = None,
+                weakest_step: int | None = None) -> ResultOut:
     return ResultOut(motif=r.motif, found=r.found, score=r.score,
                      top_score=r.top_score,
                      witness=[_hop_out(h) for h in r.witness],
                      explanation=r.explanation, truncated=r.truncated,
-                     expansions=r.expansions)
+                     expansions=r.expansions, narrative=narrative,
+                     narrative_weakest_step=weakest_step)
 
 
 class CompileIn(BaseModel):
@@ -98,17 +102,21 @@ class CompileIn(BaseModel):
 def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
                client: httpx.Client | None = None,
                complete_fn=None,
-               canned_path: str | Path | None = None) -> FastAPI:
+               canned_path: str | Path | None = None,
+               narrate_complete=None) -> FastAPI:
     """Build the app over a ready engine.
 
     Tests inject a stub model via `complete_fn`. `canned_path=None`
     loads the committed pair; pass a missing path to disable it.
+    `narrate_complete=None` sketches no live narratives (each stays
+    None); serving entry points pass the Spark client explicitly.
     """
     app = FastAPI(title="MotifQL live scoring + ezrules proxy")
     app.state.engine = engine
     app.state.upstream_url = upstream_url
     app.state.client = client or httpx.Client(timeout=30.0)
     app.state.complete_fn = complete_fn or spark_complete
+    app.state.narrate_complete = narrate_complete
     app.state.canned = load_canned(canned_path or CANNED_PATH)
 
     @app.get("/")
@@ -137,14 +145,18 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
             res = compile_english(
                 req.english, engine, complete=app.state.complete_fn,
                 max_attempts=req.max_attempts, n_witnesses=req.n_witnesses,
-                anchor_tids=req.anchor_tids, canned=app.state.canned)
+                anchor_tids=req.anchor_tids, canned=app.state.canned,
+                narrate_complete=app.state.narrate_complete)
         except CompileError as e:
             return JSONResponse({"detail": str(e)}, status_code=e.status_code)
+        narratives = res.narratives or [None] * len(res.witnesses)
+        weakest = res.narrative_weakest or [None] * len(res.witnesses)
         return JSONResponse({
             "motif": res.motif, "compiled": res.compiled,
             "attempts": res.attempts, "errors": res.errors,
             "source": res.source,
-            "witnesses": [_result_out(w).model_dump() for w in res.witnesses],
+            "witnesses": [_result_out(w, narrative=n, weakest_step=s).model_dump()
+                          for w, n, s in zip(res.witnesses, narratives, weakest)],
         })
 
     @app.post("/score")
@@ -180,7 +192,7 @@ def _default_app() -> FastAPI:
     data = os.environ.get("MOTIFQL_DATA")
     upstream = os.environ.get("MOTIFQL_UPSTREAM", DEFAULT_UPSTREAM)
     engine = Engine.from_motif_file(motifs, transfers=data or None)
-    return create_app(engine, upstream)
+    return create_app(engine, upstream, narrate_complete=spark_complete)
 
 
 # Import-time app for `uvicorn motifql.server:app`.
@@ -203,7 +215,7 @@ def main(
     if data is not None and not Path(data).exists():
         raise typer.BadParameter(f"data not found: {data} (see README Reproduce)")
     engine = Engine.from_motif_file(motifs, transfers=data or None)
-    app = create_app(engine, upstream)
+    app = create_app(engine, upstream, narrate_complete=spark_complete)
     if demo:
         canned = app.state.canned
         print(f"demo: {engine.graph.n_edges} transfers, "

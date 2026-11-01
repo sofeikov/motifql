@@ -19,6 +19,7 @@ import numpy as np
 from motifql.engine import Engine, MotifResult
 from motifql.groups import score_any
 from motifql.matcher import EXACT_FLOOR
+from motifql.models import narrate as narrate_mod
 from motifql.models.repair import RepairResult, repair_loop, try_compile
 from motifql.models.spark import SparkError, complete as spark_complete
 
@@ -35,6 +36,8 @@ class CompileError(Exception):
 class Canned:
     english: str
     motif: str
+    narrative: str | None = None  # committed story for the scripted anchor
+    narrative_anchor_tid: int | None = None
 
 
 @dataclass
@@ -45,6 +48,8 @@ class CompileResult:
     errors: list[str]
     source: str  # "model" | "cache" | "canned"
     witnesses: list[MotifResult]
+    narratives: list[str | None] | None = None  # parallel to witnesses
+    narrative_weakest: list[int | None] | None = None  # 1-based hop or None
 
 
 def load_canned(path: str | Path) -> Canned | None:
@@ -53,7 +58,19 @@ def load_canned(path: str | Path) -> Canned | None:
     if not p.exists():
         return None
     obj = json.loads(p.read_text())
-    return Canned(english=obj["english"], motif=obj["motif"])
+    return Canned(english=obj["english"], motif=obj["motif"],
+                  narrative=obj.get("narrative"),
+                  narrative_anchor_tid=obj.get("narrative_anchor_tid"))
+
+
+def _witness_dict(w: MotifResult) -> dict:
+    """MotifResult as the plain-dict witness narrate() consumes."""
+    return {"hops": [{"transfer_id": h.transfer_id, "timestamp": h.timestamp,
+                      "from_bank": h.from_bank, "from_account": h.from_account,
+                      "to_bank": h.to_bank, "to_account": h.to_account,
+                      "amount": h.amount} for h in w.witness],
+            "explanation": w.explanation, "top_score": w.top_score,
+            "found": w.found}
 
 
 def compile_english(english: str, engine: Engine, *,
@@ -63,13 +80,20 @@ def compile_english(english: str, engine: Engine, *,
                     sample_n: int = 3000,
                     sample_seed: int = 7,
                     anchor_tids: list[int] | None = None,
-                    canned: Canned | None = None) -> CompileResult:
+                    canned: Canned | None = None,
+                    narrate_complete=None) -> CompileResult:
     """Compile English to a motif and show its best sample witnesses.
 
     `anchor_tids` pins exact anchors (the scripted demo); otherwise a
     seeded sample is ranked by top_score. Raises CompileError when the
     model is unreachable (and no canned pair matches) or a pinned
     anchor is absent from the graph.
+
+    `narrate_complete` is the model transport for witness narratives
+    (None sketches none — every narrative stays None). Narration fails
+    closed per witness: the canned story covers the scripted anchor
+    offline, live witnesses get a model story, and anything else —
+    model down, bad witness, failed verification — yields None.
     """
     text = english.strip()
     if not text:
@@ -99,8 +123,39 @@ def compile_english(english: str, engine: Engine, *,
     assert result.compiled is not None
     witnesses = _witnesses(engine, result.compiled, n_witnesses, sample_n,
                            sample_seed, anchor_tids or [])
+    narratives, weakest = _narratives(text, result.text, witnesses,
+                                      narrate_complete, canned)
     return CompileResult(result.text, True, result.attempts, result.errors,
-                         source, witnesses)
+                         source, witnesses, narratives, weakest)
+
+
+def _narratives(english: str, motif_text: str, witnesses: list[MotifResult],
+                narrate_complete, canned: Canned | None
+                ) -> tuple[list[str | None], list[int | None]]:
+    """Per-witness stories; the canned anchor needs no model call."""
+    stories: list[str | None] = []
+    steps: list[int | None] = []
+    for w in witnesses:
+        weak = narrate_mod.weakest(w.explanation)
+        steps.append(weak[2] if weak else None)
+        anchor = w.witness[-1].transfer_id if w.witness else None
+        if (canned is not None and canned.narrative
+                and anchor is not None
+                and anchor == canned.narrative_anchor_tid):
+            stories.append(canned.narrative)
+        elif narrate_complete is None:
+            stories.append(None)
+        else:
+            try:
+                res = narrate_mod.narrate(english, motif_text,
+                                          _witness_dict(w),
+                                          complete=narrate_complete)
+            except Exception:
+                res = None
+            stories.append(res.text if res is not None else None)
+            if res is not None and res.text is not None:
+                steps[-1] = res.weakest_step
+    return stories, steps
 
 
 def _witnesses(engine: Engine, compiled, n_witnesses: int, sample_n: int,

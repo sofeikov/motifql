@@ -153,7 +153,10 @@ you find them:
   counts overstate how many multi-hop structures were caught. The tables
   above count transfers.
 - **The English test set is precise.** Its descriptions state hop ranges,
-  windows and thresholds. Compiling loose analyst intent is the next tier.
+  windows and thresholds. A 10-item loose-intent tier (no hops, windows
+  or thresholds in the English) compiles 10/10 with 9/10 rubric passes,
+  reported separately — but it is rubric-graded, n=10, not a sealed
+  benchmark.
 
 The review history is public:
 [#6](https://github.com/sofeikov/motifql/issues/6),
@@ -173,14 +176,16 @@ The review history is public:
 | Streaming ingest, live engine, ezrules proxy (stub-tested) | |
 | RQ3 latency benchmarks (~15× live headroom over peak minute) | |
 | Demo UI: English box → motif → animated witness | |
+| Loose-intent tier (rubric-graded, n=10) + witness narratives | |
 
 ## Demo
 
 Describe a pattern in English; Muse Spark writes the motif; the
 witness animates hop by hop with per-hop amounts, gaps and condition
-degrees. Needs `MUSE_KEY` for live compilations — the scripted demo
-(a committed Spark reply tracing train CYCLE instance 102) works
-without one:
+degrees, plus a one-paragraph investigator narrative naming the
+weakest step. Needs `MUSE_KEY` for live compilations — the scripted
+demo (a committed Spark reply tracing train CYCLE instance 102,
+narrative included) works without one:
 
 ```bash
 PYTHONPATH=src uv run python -m motifql.server --demo --port 8000

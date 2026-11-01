@@ -131,6 +131,15 @@ def test_committed_canned_pair_compiles_and_fires() -> None:
     assert res.witnesses[0].top_score >= 0.5
 
 
+def test_committed_canned_narrative_covers_scripted_anchor() -> None:
+    # The recorded demo needs no key: motif + narrative both committed.
+    canned = load_canned(UI_DIR / "canned.json")
+    assert canned is not None
+    assert canned.narrative and len(canned.narrative.split(". ")) >= 3
+    assert canned.narrative_anchor_tid == 2012559
+    assert "weakest step is hop" in canned.narrative
+
+
 def test_pos_of() -> None:
     eng = _engine()
     g = eng.graph
@@ -142,6 +151,79 @@ def test_pos_of() -> None:
     assert g2.pos_of(4) == 4
     g2.append(10**9 + 1, "001", "X", "001", "Y", 1.0, 100)
     assert g2.pos_of(100) == 5 and g2.pos_of(4) == 4
+
+
+def _narrate_ok(messages):
+    return ("$1,000 left 001/A for 001/B on 2022-09-03, then $990 moved to "
+            "001/C and $980 returned to 001/A within 2.0h. Both conditions "
+            "held. The weakest step is hop 3.", {})
+
+
+def test_live_narratives_attached_with_weakest_step() -> None:
+    res = compile_english("cycle", _engine(), complete=_ok,
+                          narrate_complete=_narrate_ok, anchor_tids=[2])
+    assert len(res.witnesses) == 1
+    assert res.narratives is not None and len(res.narratives) == 1
+    assert res.narratives[0] is not None and "$1,000" in res.narratives[0]
+    assert res.narrative_weakest == [3]
+
+
+def test_narrative_transport_down_fails_closed() -> None:
+    res = compile_english("cycle", _engine(), complete=_ok,
+                          narrate_complete=_down, anchor_tids=[2])
+    assert res.compiled is True  # narration never breaks the compile
+    assert res.narratives == [None]
+    assert res.narrative_weakest == [3]  # weakest is deterministic anyway
+
+
+def test_no_narrate_transport_sketches_none() -> None:
+    res = compile_english("cycle", _engine(), complete=_ok, anchor_tids=[2])
+    assert res.narratives == [None]
+
+
+def test_canned_narrative_covers_scripted_anchor_offline() -> None:
+    canned = Canned(english="the scripted sentence", motif=CAND,
+                    narrative="Canned story.", narrative_anchor_tid=2)
+    seen = []
+
+    def spy(messages):
+        seen.append(1)
+        return _narrate_ok(messages)
+
+    res = compile_english("the scripted sentence", _engine(), complete=_down,
+                          canned=canned, narrate_complete=spy,
+                          anchor_tids=[2])
+    assert (res.compiled, res.source) == (True, "canned")
+    assert res.narratives == ["Canned story."]
+    assert seen == []  # the scripted anchor needs no model call
+    # Anchors the canned story doesn't cover still go live.
+    other = Canned(english="the scripted sentence", motif=CAND,
+                   narrative="Canned story.", narrative_anchor_tid=999)
+    res = compile_english("the scripted sentence", _engine(), complete=_ok,
+                          canned=other, narrate_complete=spy,
+                          anchor_tids=[2])
+    assert res.narratives and res.narratives[0] != "Canned story."
+    assert seen != []
+
+
+def test_route_carries_narratives() -> None:
+    app = create_app(_engine(), complete_fn=_ok,
+                     canned_path=UI_DIR / "canned.json",
+                     narrate_complete=_narrate_ok)
+    body = TestClient(app).post(
+        "/compile", json={"english": "a cycle", "anchor_tids": [2]}).json()
+    assert body["compiled"] is True
+    first = body["witnesses"][0]
+    assert first["narrative"] is not None and "$1,000" in first["narrative"]
+    assert first["narrative_weakest_step"] == 3
+    # Without a narrate transport there is no story, but the weakest
+    # step is deterministic from the degrees, so it still ships.
+    app = create_app(_engine(), complete_fn=_ok,
+                     canned_path=UI_DIR / "canned.json")
+    first = TestClient(app).post(
+        "/compile", json={"english": "a cycle", "anchor_tids": [2]}).json()["witnesses"][0]
+    assert first["narrative"] is None
+    assert first["narrative_weakest_step"] == 3
 
 
 def test_route_and_index() -> None:

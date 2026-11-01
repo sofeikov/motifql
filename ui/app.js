@@ -214,6 +214,23 @@ function renderDegrees(w) {
   $('degrees-sec').hidden = (w.explanation || []).length === 0;
 }
 
+/** Narrative paragraph HTML (pure: node-harnessable). Empty when none. */
+function narrativeHTML(narrative, weakestStep) {
+  if (!narrative) return '';
+  let html = `<p>${esc(narrative)}</p>`;
+  if (Number.isInteger(weakestStep)) {
+    html += `<span class="weakest">Weakest step: hop ${weakestStep}</span>`;
+  }
+  return html;
+}
+
+function renderNarrative(w) {
+  const box = $('narrative');
+  const html = narrativeHTML(w.narrative, w.narrative_weakest_step);
+  box.hidden = !html;
+  box.innerHTML = html;
+}
+
 function renderScore(w) {
   $('score-line').hidden = false;
   $('score-val').textContent = w.top_score.toFixed(3);
@@ -509,6 +526,7 @@ function selectWitness(i, autoplay) {
   renderTabs();
   renderDegrees(w);
   renderScore(w);
+  renderNarrative(w); // before the still/empty returns: ?at= keeps it
   state.geom = buildSVG(w);
   state.t = 0;
   $('legend-done').textContent =
@@ -547,6 +565,7 @@ async function runCompile(english, anchorTids) {
       pre.textContent = res.motif;
       $('motif-box').appendChild(pre);
       setBusy(false);
+      $('narrative').hidden = true;
       $('caption').innerHTML = '<span class="dim">The model output did not compile — see errors.</span>';
       return;
     }
@@ -556,6 +575,7 @@ async function runCompile(english, anchorTids) {
     if (!state.witnesses.length) {
       $('caption').innerHTML = '<span class="dim">Compiled — but matches nothing on the sample.</span>';
       $('witness-sec').hidden = true;
+      $('narrative').hidden = true;
       return;
     }
     selectWitness(0, true);
@@ -564,6 +584,7 @@ async function runCompile(english, anchorTids) {
     showError('motif-box', err);
     $('witness-sec').hidden = true;
     $('degrees-sec').hidden = true;
+    $('narrative').hidden = true;
     $('caption').innerHTML = '<span class="dim">Press Scripted demo — or describe a pattern and compile it.</span>';
   }
 }
@@ -628,6 +649,7 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     fmtMoney, fmtGap, fmtTime, acctKey, layout, hopStart, totalDur,
-    parseBootParams, isChain, HOP_DUR, MEMBER_DUR, INTRO, OUTRO,
+    parseBootParams, isChain, narrativeHTML,
+    HOP_DUR, MEMBER_DUR, INTRO, OUTRO,
   };
 }

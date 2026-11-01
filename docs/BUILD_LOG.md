@@ -305,3 +305,26 @@ Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
   `docs/2026-11-07-demo-ui.md`: this day's report.
 - 8 tests; headless-Firefox screenshots at 5 states, read and
   iterated; full suite green both modes (325/325).
+
+## Nov 8 — loose-intent tier, witness narratives (issue #23)
+
+Built with Muse Code (agentic coding CLI powered by Meta Muse Spark):
+
+- `eval/rq4_intent_items.py` + `eval/rq4_intent_grades.csv`: 10
+  loose descriptions (no hops/windows/thresholds), 1–2 acceptable
+  references each, committed 3-check rubric grades (9/10 per arm).
+- `eval/rq4.py`: `--tier precise|intent` (separate runs CSVs, never
+  merged; max-over-refs Jaccard) + `--compile-only` for key-only
+  runs; motif-text sidecar; precise tier byte-compatible.
+- `src/motifql/models/narrate.py`: extractive witness tables
+  (path/group-aware) + Spark narratives with disk cache and
+  fail-closed verification; wired through `compile_service`,
+  `server.py` (`/compile` ships narrative + weakest step) and the
+  UI (paragraph under the stage, `?at=` stills included).
+- `ui/canned.json`: committed scripted narrative (verified
+  verbatim), so recording still needs no key.
+- `docs/2026-11-08-issue23-intent-narratives.md`: this day's
+  report — intent results (10/10 compile, 9/10 rubric, Jaccard
+  0.62/0.57) and the 11-narrative faithfulness spot-check, which
+  forced the group-shape prompt and the DISTINCT-counts line.
+- 21 tests; full suite green (343 passed, 3 skipped).
