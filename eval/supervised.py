@@ -41,6 +41,31 @@ DEFAULT_BUDGETS = "50,100,500,5000"
 COLS = ["model", "granularity", "set", "budget", "group", "n_total", "n_hit", "recall"]
 FORMATS = ["ACH", "Bitcoin", "Cash", "Cheque", "Credit Card", "Reinvestment", "Wire"]
 OWN_FEATS = ["own_log_amount", "own_is_self_loop"]
+# Single source of truth for GBM hyperparameters: the RQ5 stacked model
+# reuses these exact settings (same seed policy), so any tuning here
+# propagates there by construction.
+GBM_PARAMS = dict(objective="binary",
+                  num_leaves=63, min_child_samples=200,
+                  learning_rate=0.05, n_estimators=1000,
+                  importance_type="gain",
+                  random_state=7, deterministic=True, verbosity=-1)
+GBM_EARLY_STOPPING_ROUNDS = 50
+
+
+def train_gbm(X_fit, y_fit, X_val, y_val) -> "lgb.LGBMClassifier":
+    """Fit one LightGBM classifier with the shared hyperparameters.
+
+    No scale_pos_weight: the evaluation ranks transfers, and with a weight
+    in the hundreds the first tree overshoots from the unweighted base rate,
+    so early stopping keeps iteration 1 and the scores collapse to a few
+    dozen distinct values. Early stopping on valid AUC (not logloss): the
+    evaluation ranks transfers per day, so ranking quality is the objective.
+    """
+    clf = lgb.LGBMClassifier(**GBM_PARAMS)
+    clf.fit(X_fit, y_fit, eval_X=X_val, eval_y=y_val,
+            eval_metric="auc",
+            callbacks=[lgb.early_stopping(GBM_EARLY_STOPPING_ROUNDS, verbose=False)])
+    return clf
 
 
 def own_transfer_features(df: pl.DataFrame) -> pl.DataFrame:
@@ -115,19 +140,7 @@ def main(
             parts.append(Xown)
             names += OWN_FEATS
         X = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
-        # No scale_pos_weight: the evaluation ranks transfers, and with a
-        # weight in the hundreds the first tree overshoots from the
-        # unweighted base rate, so early stopping keeps iteration 1 and
-        # the scores collapse to a few dozen distinct values.
-        clf = lgb.LGBMClassifier(objective="binary",
-                                 num_leaves=63, min_child_samples=200,
-                                 learning_rate=0.05, n_estimators=1000,
-                                 importance_type="gain",
-                                 random_state=7, deterministic=True, verbosity=-1)
-        # Early stopping on valid AUC (not logloss): the evaluation ranks
-        # transfers per day, so ranking quality is the objective.
-        clf.fit(X[is_fit], y[is_fit], eval_X=X[is_val], eval_y=y[is_val],
-                eval_metric="auc", callbacks=[lgb.early_stopping(50, verbose=False)])
+        clf = train_gbm(X[is_fit], y[is_fit], X[is_val], y[is_val])
         auc = roc_auc_score(y[is_val], clf.predict_proba(X[is_val])[:, 1])
         log.info("  %s: best iteration %d, valid AUC %.4f",
                  model, clf.best_iteration_, auc)

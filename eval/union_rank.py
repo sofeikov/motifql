@@ -34,6 +34,33 @@ from eval import evaluate, splits  # noqa: E402
 log = logging.getLogger("union_rank")
 
 
+def min_rank_union(base: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    """Rank by best (min) per-column rank across score columns.
+
+    Each column is ranked per day through the shared protocol
+    (`evaluate.rank_per_day`), then alerts go by best rank — the standard
+    fix for uncalibrated cross-motif scores. `base` needs transfer_id, day
+    and the score columns; the returned frame carries base's columns plus
+    `rank`, ready for `transfer_recall`/`instance_recall`. Used by the CLI
+    below and by RQ5 fusion (motifs + GBM).
+    """
+    ranks = base.select("transfer_id")
+    for c in cols:
+        ranked = evaluate.rank_per_day(
+            base.select("transfer_id", "day", pl.col(c).alias("score")))
+        ranks = ranks.join(
+            ranked.select("transfer_id", pl.col("rank").alias(f"rank_{c}")),
+            on="transfer_id", how="left", maintain_order="left")
+    best = ranks.with_columns(
+        pl.min_horizontal([f"rank_{c}" for c in cols]).alias("best"))
+    # score desc == best-rank asc; the keyed hash still
+    # breaks best-rank ties, as in every other ranking.
+    return evaluate.rank_per_day(
+        base.join(best.select("transfer_id", "best"), on="transfer_id",
+                  how="left", maintain_order="left")
+        .with_columns((-pl.col("best")).alias("score")))
+
+
 def main(
     data: Annotated[Path, typer.Option(help="Prepped dataset directory.")] = Path("data/hi-small"),
     scores: Annotated[Path, typer.Option(help="Score parquet (transfer_id + {motif}__{arm}).")] = Path(
@@ -78,21 +105,7 @@ def main(
                     pl.max_horizontal(cols).alias("score"))
                 hold = evaluate.rank_per_day(combined)
             else:
-                ranks = base.select("transfer_id")
-                for c in cols:
-                    ranked = evaluate.rank_per_day(
-                        base.select("transfer_id", "day", pl.col(c).alias("score")))
-                    ranks = ranks.join(
-                        ranked.select("transfer_id", pl.col("rank").alias(f"rank_{c}")),
-                        on="transfer_id", how="left", maintain_order="left")
-                best = ranks.with_columns(
-                    pl.min_horizontal([f"rank_{c}" for c in cols]).alias("best"))
-                # score desc == best-rank asc; the keyed hash still
-                # breaks best-rank ties, as in every other ranking.
-                hold = evaluate.rank_per_day(
-                    base.join(best.select("transfer_id", "best"), on="transfer_id",
-                              how="left", maintain_order="left")
-                    .with_columns((-pl.col("best")).alias("score")))
+                hold = min_rank_union(base, cols)
             tag = {"mode": mode, "arm": arm,
                    "motifs": "+".join(motifs_wanted)}
             tr_rows.append(
