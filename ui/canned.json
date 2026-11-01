@@ -3,5 +3,698 @@
   "motif": "term patient = trapezoid(0h, 0h, 24h, 120h)\n\nmotif cand {\n  match (a:account) -[e:transfer*2..5]-> (a:account)\n  where e is time_ordered and span(e) <= 7d\n  soft each e: e.gap is patient and each e: e.amount ~= prev.amount within 20%\n  score min\n  emit when score >= 0.5\n}\n",
   "narrative": "On 2022-09-03 15:36Z $717.79 moved from 0119/811C597B0 to 0222/811B83280, then on 2022-09-05 06:54Z $703.36 moved from 0222/811B83280 to 0048309/811C599A0, then on 2022-09-06 13:44Z $745.36 moved from 0048309/811C599A0 to 0119/811C597B0 over 2.9d from first to last. The gap after hop 1 was 39.3h and the gap after hop 2 was 30.8h, with each e: gap is patient holding at degree 0.841 and each e: amount ~= prev.amount within 20% holding at degree 0.718. The weakest step is hop 3, where each e: amount ~= prev.amount within 20% holds at 0.718. This returns to 0119/811C597B0 to close the loop.",
   "narrative_anchor_tid": 2012559,
-  "provenance": "muse-spark-1.3 via eval/results cache, RQ4 cycle-basic; verified compiling + catches train CYCLE 102. Narrative: muse-spark-1.3 over the pinned witness (tids 2012557-9, top 0.718), verified amounts/dates/gaps verbatim, Nov 8 (issue #23). Offline path serves motif + narrative from this file."
+  "provenance": "muse-spark-1.3 via eval/results cache, RQ4 cycle-basic; verified compiling + catches train CYCLE 102. Narrative: muse-spark-1.3 over the pinned witness (tids 2012557-9, top 0.718), verified amounts/dates/gaps verbatim, Nov 8 (issue #23). Offline path serves motif + narrative from this file.",
+  "evasion_curve": {
+    "seed": 12345,
+    "anchor_tid": 2012559,
+    "baseline": {
+      "fuzzy_top": 0.7182153782559514,
+      "crisp_top": 1.0
+    },
+    "grid": {
+      "noise_pct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "gap": [
+        1.0,
+        1.25,
+        1.5,
+        1.75,
+        2.0
+      ]
+    },
+    "points": [
+      {
+        "noise_pct": 0,
+        "gap": 1.0,
+        "fuzzy_top": 0.7182153782559514,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.7182153782559514,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 0,
+        "gap": 1.25,
+        "fuzzy_top": 0.7182153782559514,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.7182153782559514,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 0,
+        "gap": 1.5,
+        "fuzzy_top": 0.6359375,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.7182153782559514,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 0,
+        "gap": 1.75,
+        "fuzzy_top": 0.53359375,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.7182153782559514,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 0,
+        "gap": 2.0,
+        "fuzzy_top": 0.43125,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.7182153782559514,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 5,
+        "gap": 1.0,
+        "fuzzy_top": 0.5963407433063013,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.5963407433063013,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 5,
+        "gap": 1.25,
+        "fuzzy_top": 0.5963407433063013,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.5963407433063013,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 5,
+        "gap": 1.5,
+        "fuzzy_top": 0.5963407433063013,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.5963407433063013,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 5,
+        "gap": 1.75,
+        "fuzzy_top": 0.53359375,
+        "crisp_top": 1.0,
+        "found": true,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.5963407433063013,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 5,
+        "gap": 2.0,
+        "fuzzy_top": 0.43125,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.5963407433063013,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 10,
+        "gap": 1.0,
+        "fuzzy_top": 0.47596638883825004,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.47596638883825004,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 10,
+        "gap": 1.25,
+        "fuzzy_top": 0.47596638883825004,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.47596638883825004,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 10,
+        "gap": 1.5,
+        "fuzzy_top": 0.47596638883825004,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.47596638883825004,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 10,
+        "gap": 1.75,
+        "fuzzy_top": 0.47596638883825004,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.47596638883825004,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 10,
+        "gap": 2.0,
+        "fuzzy_top": 0.43125,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.47596638883825004,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 15,
+        "gap": 1.0,
+        "fuzzy_top": 0.3570655337275298,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.3570655337275298,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 15,
+        "gap": 1.25,
+        "fuzzy_top": 0.3570655337275298,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.3570655337275298,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 15,
+        "gap": 1.5,
+        "fuzzy_top": 0.3570655337275298,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.3570655337275298,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 15,
+        "gap": 1.75,
+        "fuzzy_top": 0.3570655337275298,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.3570655337275298,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 15,
+        "gap": 2.0,
+        "fuzzy_top": 0.3570655337275298,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.3570655337275298,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 20,
+        "gap": 1.0,
+        "fuzzy_top": 0.23960979605285193,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.23960979605285193,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 20,
+        "gap": 1.25,
+        "fuzzy_top": 0.23960979605285193,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.23960979605285193,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 20,
+        "gap": 1.5,
+        "fuzzy_top": 0.23960979605285193,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.23960979605285193,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 20,
+        "gap": 1.75,
+        "fuzzy_top": 0.23960979605285193,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.23960979605285193,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 20,
+        "gap": 2.0,
+        "fuzzy_top": 0.23960979605285193,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.23960979605285193,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 25,
+        "gap": 1.0,
+        "fuzzy_top": 0.1235737279503224,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.1235737279503224,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 25,
+        "gap": 1.25,
+        "fuzzy_top": 0.1235737279503224,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.1235737279503224,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 25,
+        "gap": 1.5,
+        "fuzzy_top": 0.1235737279503224,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.1235737279503224,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 25,
+        "gap": 1.75,
+        "fuzzy_top": 0.1235737279503224,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.1235737279503224,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 25,
+        "gap": 2.0,
+        "fuzzy_top": 0.1235737279503224,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.1235737279503224,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 30,
+        "gap": 1.0,
+        "fuzzy_top": 0.008931745043052386,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.840625,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.008931745043052386,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 30,
+        "gap": 1.25,
+        "fuzzy_top": 0.008931745043052386,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.73828125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.008931745043052386,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 30,
+        "gap": 1.5,
+        "fuzzy_top": 0.008931745043052386,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.6359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.008931745043052386,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 30,
+        "gap": 1.75,
+        "fuzzy_top": 0.008931745043052386,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.53359375,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.008931745043052386,
+            "step": 3
+          }
+        ]
+      },
+      {
+        "noise_pct": 30,
+        "gap": 2.0,
+        "fuzzy_top": 0.008931745043052386,
+        "crisp_top": 0.0,
+        "found": false,
+        "explanation": [
+          {
+            "predicate": "each e: gap is patient",
+            "degree": 0.43125,
+            "step": 2
+          },
+          {
+            "predicate": "each e: amount ~= prev.amount within 20%",
+            "degree": 0.008931745043052386,
+            "step": 3
+          }
+        ]
+      }
+    ]
+  }
 }

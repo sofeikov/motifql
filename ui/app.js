@@ -109,19 +109,50 @@ function layout(hops, W, H) {
 function hopStart(i, unit) { return INTRO + i * (unit || HOP_DUR); }
 function totalDur(n, unit) { return INTRO + n * (unit || HOP_DUR) + OUTRO; }
 
-/** Boot deep-links: ?sentence=, ?anchors=tid,.. ?at=sec, ?autoplay=0, ?autorun=0. */
+const EVASION_SEED = 12345; // pinned: canned curve + live path share the draws
+
+/** Boot deep-links: ?sentence=, ?anchors=tid,.. ?at=sec, ?noise=pct, ?gap=factor, ?autoplay=0, ?autorun=0. */
 function parseBootParams(search) {
   const q = new URLSearchParams(search);
   const anchors = (q.get('anchors') || '').split(',')
     .map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n));
   const at = q.has('at') ? parseFloat(q.get('at')) : null;
+  const noise = q.has('noise') ? parseFloat(q.get('noise')) : 0;
+  const gap = q.has('gap') ? parseFloat(q.get('gap')) : 1.0;
   return {
     sentence: q.get('sentence'),
     anchors,
     at: Number.isFinite(at) ? at : null,
+    noise: Number.isFinite(noise) ? Math.max(0, Math.min(30, noise)) : 0,
+    gap: Number.isFinite(gap) ? Math.max(1, Math.min(2, gap)) : 1.0,
     autoplay: q.get('autoplay') !== '0',
     autorun: q.get('autorun') !== '0',
   };
+}
+
+/** Evasion caption: "+15% noise ×1.50 gaps: fuzzy 0.718→0.357, exact 1→0". */
+function formatEvasionCaption(noisePct, gap, baseF, pertF, baseC, pertC) {
+  const f = (x) => x.toFixed(3);
+  const c = (x) => String(parseFloat(x.toFixed(3)));
+  const head = noisePct === 0 && gap === 1
+    ? 'Clean witness'
+    : `+${noisePct}% noise ×${Number(gap).toFixed(2)} gaps`;
+  return `<span class="dim">${head}: fuzzy </span>` +
+    `<span class="amt">${f(baseF)}→${f(pertF)}</span>` +
+    `<span class="dim">, exact </span>` +
+    `<span class="amt">${c(baseC)}→${c(pertC)}</span>`;
+}
+
+/** Nearest canned-curve point (exact match wins with distance 0). */
+function lookupEvasionPoint(curve, noisePct, gap) {
+  const pts = (curve && curve.points) || [];
+  if (!pts.length) return null;
+  let best = pts[0], bd = Infinity;
+  for (const p of pts) {
+    const d = Math.abs(p.noise_pct - noisePct) / 30 + Math.abs(p.gap - gap);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
 }
 
 // -- app --------------------------------------------------------------------
@@ -133,6 +164,7 @@ const state = {
   witnesses: [], wi: 0, motif: '', compiled: false,
   playing: false, t: 0, raf: 0, lastTick: 0,
   geom: null, // {nodes: Map key->{x,y}, edges: [{path, len, label}], nodeEls}
+  evasion: { noise: 0, gap: 1.0, timer: 0, curve: null, seq: 0 },
 };
 
 function el(name, attrs, parent) {
@@ -519,6 +551,74 @@ function play(fromStart) {
   state.raf = requestAnimationFrame(tick);
 }
 
+function evasionLabels() {
+  $('ev-noise-val').textContent = `±${state.evasion.noise}%`;
+  $('ev-gap-val').textContent = `×${Number(state.evasion.gap).toFixed(2)}`;
+}
+
+function syncEvasionURL() {
+  const q = new URLSearchParams(location.search);
+  q.set('noise', String(state.evasion.noise));
+  q.set('gap', String(state.evasion.gap));
+  history.replaceState(null, '', `${location.pathname}?${q}`);
+}
+
+function renderEvasion(d, source) {
+  $('ev-fuzzy-val').textContent = d.fuzzy_top.toFixed(3);
+  $('ev-crisp-val').textContent = String(parseFloat(d.crisp_top.toFixed(3)));
+  $('ev-fuzzy-fill').style.width =
+    `${Math.max(0, Math.min(1, d.fuzzy_top)) * 100}%`;
+  $('ev-crisp-fill').style.width =
+    `${Math.max(0, Math.min(1, d.crisp_top)) * 100}%`;
+  renderDegrees({ explanation: d.explanation || [] });
+  $('evasion-caption').innerHTML = formatEvasionCaption(
+    state.evasion.noise, state.evasion.gap,
+    d.baseline_fuzzy, d.fuzzy_top, d.baseline_crisp, d.crisp_top);
+  const badge = $('ev-source');
+  badge.hidden = false;
+  badge.textContent = source;
+  badge.className = `badge ${source === 'live' ? 'live' : 'cached'}`;
+}
+
+async function updateEvasion() {
+  const w = state.witnesses[state.wi];
+  if (!w || !(w.witness || []).length || !state.motif) return;
+  const anchor = w.witness[w.witness.length - 1].transfer_id;
+  const my = ++state.evasion.seq;
+  evasionLabels();
+  let data = null, source = 'live';
+  try {
+    const res = await api('/perturb', {
+      motif_text: state.motif, anchor_tids: [anchor],
+      amount_noise_pct: state.evasion.noise / 100,
+      gap_scale: state.evasion.gap, seed: EVASION_SEED,
+    });
+    data = res.witnesses[0];
+  } catch (err) {
+    // Offline: the canned curve covers the scripted anchor exactly;
+    // anything else fails honestly in the evasion caption.
+    const curve = state.evasion.curve;
+    const pt = curve && anchor === curve.anchor_tid
+      ? lookupEvasionPoint(curve, state.evasion.noise, state.evasion.gap)
+      : null;
+    if (my !== state.evasion.seq) return;
+    if (pt) {
+      data = {
+        fuzzy_top: pt.fuzzy_top, crisp_top: pt.crisp_top,
+        baseline_fuzzy: curve.baseline.fuzzy_top,
+        baseline_crisp: curve.baseline.crisp_top,
+        explanation: pt.explanation,
+      };
+      source = 'scripted curve';
+    } else {
+      showError('evasion-caption', err);
+      return;
+    }
+  }
+  if (my !== state.evasion.seq || !data) return;
+  renderEvasion(data, source);
+}
+
 function selectWitness(i, autoplay) {
   stopPlayer();
   state.wi = i;
@@ -531,6 +631,8 @@ function selectWitness(i, autoplay) {
   state.t = 0;
   $('legend-done').textContent =
     state.geom && state.geom.kind === 'group' ? 'traced member' : 'traced hop';
+  $('evasion').hidden = !(w.witness || []).length || !state.motif;
+  if (!$('evasion').hidden) updateEvasion();
   if (!state.geom) {
     $('caption').innerHTML = '<span class="dim">No hops in this witness.</span>';
     return;
@@ -576,6 +678,7 @@ async function runCompile(english, anchorTids) {
       $('caption').innerHTML = '<span class="dim">Compiled — but matches nothing on the sample.</span>';
       $('witness-sec').hidden = true;
       $('narrative').hidden = true;
+      $('evasion').hidden = true;
       return;
     }
     selectWitness(0, true);
@@ -585,6 +688,7 @@ async function runCompile(english, anchorTids) {
     $('witness-sec').hidden = true;
     $('degrees-sec').hidden = true;
     $('narrative').hidden = true;
+    $('evasion').hidden = true;
     $('caption').innerHTML = '<span class="dim">Press Scripted demo — or describe a pattern and compile it.</span>';
   }
 }
@@ -619,10 +723,28 @@ async function boot() {
   };
   $('compile-btn').onclick = () => runCompile($('english').value, []);
   $('scripted-btn').onclick = () => runCompile(window.__demoEnglish, window.__demoAnchors);
+  // Evasion sliders: labels + URL update instantly, re-scoring debounced.
+  const bootParams = parseBootParams(location.search);
+  state.evasion.noise = Math.round(bootParams.noise);
+  state.evasion.gap = bootParams.gap;
+  $('ev-noise').value = state.evasion.noise;
+  $('ev-gap').value = state.evasion.gap;
+  evasionLabels();
+  const scheduleEvasion = () => {
+    state.evasion.noise = parseInt($('ev-noise').value, 10);
+    state.evasion.gap = parseFloat($('ev-gap').value);
+    evasionLabels();
+    syncEvasionURL();
+    clearTimeout(state.evasion.timer);
+    state.evasion.timer = setTimeout(updateEvasion, 150);
+  };
+  $('ev-noise').oninput = scheduleEvasion;
+  $('ev-gap').oninput = scheduleEvasion;
   try {
     const [cfg, health] = await Promise.all([api('/demo-config'), api('/healthz')]);
     window.__demoEnglish = cfg.english;
     window.__demoAnchors = cfg.anchor_tids || [];
+    state.evasion.curve = cfg.evasion_curve || null;
     $('english').value = cfg.english || '';
     const db = $('data-badge');
     db.hidden = false;
@@ -650,6 +772,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     fmtMoney, fmtGap, fmtTime, acctKey, layout, hopStart, totalDur,
     parseBootParams, isChain, narrativeHTML,
-    HOP_DUR, MEMBER_DUR, INTRO, OUTRO,
+    formatEvasionCaption, lookupEvasionPoint,
+    HOP_DUR, MEMBER_DUR, INTRO, OUTRO, EVASION_SEED,
   };
 }

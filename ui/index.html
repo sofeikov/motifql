@@ -311,6 +311,98 @@
   .legend i.active { border-color: var(--amber); }
   .legend i.todo { border-top-style: dashed; border-color: #3a4658; }
   .legend em { font-style: normal; }
+  #evasion {
+    border-top: 1px solid var(--line);
+    padding: 10px 24px 6px;
+    background: rgba(17, 22, 30, 0.55);
+  }
+  #evasion[hidden] { display: none; }
+  .ev-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .ev-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .ev-link {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .ev-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 4px 28px;
+  }
+  .ev-sliders label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12.5px;
+    color: var(--dim);
+    font-family: var(--mono);
+    margin: 6px 0;
+  }
+  .ev-sliders input[type="range"] {
+    flex: 1;
+    min-width: 120px;
+    accent-color: var(--green);
+  }
+  .ev-val { min-width: 56px; color: var(--text); text-align: right; }
+  .ev-arm { margin: 6px 0; }
+  .ev-arm-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .ev-arm-name { font-size: 12px; color: var(--dim); font-family: var(--mono); }
+  .ev-arm-val {
+    margin-left: auto;
+    font-size: 15px;
+    font-weight: 700;
+    font-family: var(--mono);
+  }
+  .ev-arm-val.fuzzy { color: var(--green); }
+  .ev-arm-val.crisp { color: var(--amber); }
+  .ev-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: #232c3a;
+    overflow: hidden;
+  }
+  .ev-bar i {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    width: 0%;
+    transition: width 0.25s ease-out;
+  }
+  .ev-bar i.fuzzy { background: var(--green); }
+  .ev-bar i.crisp { background: var(--amber); }
+  #evasion-caption {
+    margin-top: 6px;
+    font-size: 13px;
+    min-height: 20px;
+  }
+  #evasion-caption .amt { color: var(--green); font-weight: 700; font-family: var(--mono); }
+  #evasion-caption .dim { color: var(--dim); }
+  .ev-note {
+    font-size: 11.5px;
+    color: var(--faint);
+    margin-top: 2px;
+  }
+  .ev-note .badge { font-size: 10.5px; padding: 1px 8px; }
+  @media (prefers-reduced-motion: reduce) {
+    .ev-bar i { transition: none; }
+  }
   .spin {
     display: inline-block;
     width: 13px; height: 13px;
@@ -376,6 +468,47 @@
       <span><i></i><em id="legend-done">traced hop</em></span>
       <span><i class="active"></i>playing now</span>
       <span><i class="todo"></i>not yet traced</span>
+    </div>
+    <div id="evasion" hidden>
+      <div class="ev-head">
+        <span class="ev-title">Evasion — synthetic noise on this witness</span>
+        <a class="ev-link" target="_blank" rel="noopener"
+           href="https://github.com/sofeikov/motifql/blob/main/docs/2026-11-05-issue15-fixes.md#6-perturbation">full RQ2 curves</a>
+      </div>
+      <div class="ev-grid">
+        <div class="ev-sliders">
+          <label>Amount noise
+            <input id="ev-noise" type="range" min="0" max="30" step="1" value="0"
+                   aria-label="Amount noise percent">
+            <span class="ev-val" id="ev-noise-val">±0%</span>
+          </label>
+          <label>Gap scale
+            <input id="ev-gap" type="range" min="1" max="2" step="0.05" value="1"
+                   aria-label="Gap scale factor">
+            <span class="ev-val" id="ev-gap-val">×1.00</span>
+          </label>
+        </div>
+        <div>
+          <div class="ev-arm">
+            <div class="ev-arm-top">
+              <span class="ev-arm-name">fuzzy</span>
+              <span class="ev-arm-val fuzzy" id="ev-fuzzy-val">–</span>
+            </div>
+            <div class="ev-bar"><i class="fuzzy" id="ev-fuzzy-fill"></i></div>
+          </div>
+          <div class="ev-arm">
+            <div class="ev-arm-top">
+              <span class="ev-arm-name">exact (α=emit)</span>
+              <span class="ev-arm-val crisp" id="ev-crisp-val">–</span>
+            </div>
+            <div class="ev-bar"><i class="crisp" id="ev-crisp-fill"></i></div>
+          </div>
+        </div>
+      </div>
+      <div id="evasion-caption"><span class="dim">Drag a slider to attack this witness.</span></div>
+      <div class="ev-note">Synthetic noise on this witness only — not a full replay.
+        <span class="badge" id="ev-source" hidden></span>
+      </div>
     </div>
     <div id="transport">
       <button id="btn-back" title="Previous hop" aria-label="Previous hop">

@@ -6,6 +6,8 @@
   payload forwarded to the upstream (stock ezrules ``/api/v2/evaluate``).
 * ``POST /compile`` — English in; motif plus sample witnesses out
   (the "is this what you meant?" step).
+* ``POST /perturb`` — motif plus pinned anchors in; the witnesses
+  re-scored under synthetic evasion noise, fuzzy vs exact (demo sliders).
 * ``GET /`` — the demo UI (English box → motif → animated witness).
 * ``GET /healthz`` — motifs loaded and edges held.
 
@@ -30,7 +32,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 from motifql.compile_service import (  # noqa: E402
-    CompileError, compile_english, load_canned)
+    EVASION_SEED, CompileError, compile_english, load_canned, score_evasion)
 from motifql.engine import Engine, MotifResult, WitnessHop  # noqa: E402
 from motifql.models.spark import complete as spark_complete  # noqa: E402
 from motifql.proxy import ProxyError, UpstreamError, inject_and_forward  # noqa: E402
@@ -99,6 +101,14 @@ class CompileIn(BaseModel):
     anchor_tids: list[int] = Field(default_factory=list)
 
 
+class PerturbIn(BaseModel):
+    motif_text: str
+    anchor_tids: list[int] = Field(default_factory=list)
+    amount_noise_pct: float = 0.0
+    gap_scale: float = 1.0
+    seed: int = EVASION_SEED
+
+
 def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
                client: httpx.Client | None = None,
                complete_fn=None,
@@ -137,7 +147,8 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
         canned = app.state.canned
         return {"english": canned.english if canned else "",
                 "anchor_tids": [DEMO_ANCHOR_TID] if canned else [],
-                "motifs": engine.motif_names}
+                "motifs": engine.motif_names,
+                "evasion_curve": canned.evasion if canned else None}
 
     @app.post("/compile")
     def compile(req: CompileIn) -> JSONResponse:
@@ -157,6 +168,29 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
             "source": res.source,
             "witnesses": [_result_out(w, narrative=n, weakest_step=s).model_dump()
                           for w, n, s in zip(res.witnesses, narratives, weakest)],
+        })
+
+    @app.post("/perturb")
+    def perturb(req: PerturbIn) -> JSONResponse:
+        try:
+            emit, witnesses = score_evasion(
+                req.motif_text, engine, anchor_tids=req.anchor_tids,
+                amount_noise_pct=req.amount_noise_pct,
+                gap_scale=req.gap_scale, seed=req.seed)
+        except CompileError as e:
+            return JSONResponse({"detail": str(e)}, status_code=e.status_code)
+        return JSONResponse({
+            "emit": emit, "seed": req.seed,
+            "amount_noise_pct": req.amount_noise_pct,
+            "gap_scale": req.gap_scale,
+            "witnesses": [{
+                "anchor_tid": w.anchor_tid, "fuzzy_top": w.fuzzy_top,
+                "crisp_top": w.crisp_top, "crisp_alpha": w.crisp_alpha,
+                "found": w.found, "baseline_fuzzy": w.baseline_fuzzy,
+                "baseline_crisp": w.baseline_crisp,
+                "witness": [_hop_out(h).model_dump() for h in w.witness],
+                "explanation": w.explanation,
+            } for w in witnesses],
         })
 
     @app.post("/score")

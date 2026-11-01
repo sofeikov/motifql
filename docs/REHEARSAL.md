@@ -46,7 +46,26 @@ the closed triangle, "Trace complete — 3 hops, span 2.9d".
 Scrub or step with the transport if the take needs a still;
 `?at=SECONDS` deep-links any moment, narrative included (total 5.6s).
 
-## Beat 4 (optional) — live English (~20s, needs `MUSE_KEY`)
+## Beat 4 — evasion (~45s)
+
+The RQ2 minute, visceral: with the triangle on screen, drag the
+**Amount noise** slider to +15%. The fuzzy bar sinks 0.718→0.357
+while the exact bar (α=emit) has already cliffed 1→0 at +10% —
+the caption reads "+15% noise: fuzzy 0.718→0.357, exact 1→0" and
+the *Why this score* amount bar sinks with it. Reset noise to 0,
+drag **Gap scale** to ×2.0: fuzzy 0.718→0.431, exact 1→0 again.
+Narration: fuzz degrades gracefully, exact rules fall off — the
+same draws as the report's perturbation curves (link under the
+sliders), applied to this witness only. Sliders re-score live in
+<500ms (debounced); the scripted anchor falls back to a committed
+curve, so this beat needs no key either.
+
+Stills (trace end + slider state deep-link together):
+`?at=99&noise=15&gap=1` (mid-attack),
+`?at=99&noise=0&gap=2` (gap cliff),
+`?at=99` (clean witness).
+
+## Beat 5 (optional) — live English (~20s, needs `MUSE_KEY`)
 
 Type a new description (e.g. the RQ4 fan-out item: *"Fan-out: one
 account pays at least 2 distinct accounts within 4 days…"*) and
@@ -57,17 +76,21 @@ story.
 
 ## Fallbacks
 
-- No `MUSE_KEY` / API down: Beats 1–3 unaffected (committed
-  canned motif + pinned anchor). Beat 4 shows the error box.
+- No `MUSE_KEY` / API down: Beats 1–4 unaffected (committed
+  canned motif + pinned anchor + evasion curve). Beat 5 shows the
+  error box.
 - Slow box: warmup is one 5M-row build (~2s here); the trace
-  itself is microseconds per anchor (fast path, no appends).
+  itself is microseconds per anchor (fast path, no appends), and
+  each slider tick re-scores one witness only (<500ms).
 - `?autorun=0` opens idle (no auto-run); `?autoplay=0` renders
   frame 0 without playing; reduced-motion users get the final
-  frame.
+  frame. If a slider take misfires, cut to the `?at=99&noise=…`
+  stills — same pixels, zero timing risk.
 
 ## Checklist before recording
 
-- [ ] `pytest tests/test_compile.py tests/test_server.py` green
+- [ ] `pytest tests/test_compile.py tests/test_server.py tests/test_evasion.py` green
 - [ ] Boot prints the demo card, page auto-plays the triangle
 - [ ] Badge reads *scripted* or *cached* (never mid-take surprises)
 - [ ] `?at=99` shows the completed trace (title-card still)
+- [ ] `?at=99&noise=15&gap=1` shows fuzzy 0.357 / exact 0 (evasion still)
