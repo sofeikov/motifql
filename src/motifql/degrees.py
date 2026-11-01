@@ -154,9 +154,10 @@ def crisp_differential_safe(expr: object, alpha: float = 0.0,
     """True when the crisp/fuzzy differential holds over `expr`.
 
     At α=0 (review #14.6): crisp>0 ⟺ fuzzy>0. Needs binary-safety
-    plus no `not`: strong negation gives crisp=1 ⟺ fuzzy=0 while
-    fuzzy(not E)>0 ⟺ fuzzy(E)<1, so the differential fails across any
-    negation. At α>0 (issue #15 finding A): crisp_α=1 ⟺ fuzzy>=α,
+    plus no negation (`not` or a negated leaf): strong negation gives
+    crisp=1 ⟺ fuzzy=0 while fuzzy(not E)>0 ⟺ fuzzy(E)<1, so the
+    differential fails across any negation. At α>0 (issue #15 finding A):
+    crisp_α=1 ⟺ fuzzy>=α,
     which additionally needs the `min` t-norm (under `product` a
     per-leaf cut is stricter than a fuzzy threshold). Unknown nodes
     fail closed either way.
@@ -172,8 +173,13 @@ def crisp_differential_safe(expr: object, alpha: float = 0.0,
         if q in _CRISP_ORDER_QUANTS or q.startswith("at_least:") or q.startswith("all_but:"):
             return crisp_differential_safe(expr.body, alpha, tnorm)
         return False
-    if isinstance(expr, (Approx, IsTerm, Comparison, GapTermCond, AmountConsCond)):
+    if isinstance(expr, (Approx, Comparison)):
         return True
+    if isinstance(expr, (IsTerm, GapTermCond, AmountConsCond)):
+        # A negated leaf (`is not T`) is strong negation, not a positive
+        # leaf: it reads crisp 1 below the cut while fuzzy stays graded,
+        # so the differential fails exactly as across `not`.
+        return not expr.negated
     return False
 
 

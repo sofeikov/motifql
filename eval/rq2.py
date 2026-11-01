@@ -105,7 +105,7 @@ def main(
 
     # Check scope per motif, decided BEFORE any replay (review
     # #14.6 + Codex P2): binarity needs no mean-grading quants, the
-    # differential additionally no `not` (and `min` at α>0).
+    # differential additionally no negation (and `min` at α>0).
     # Out-of-scope checks are skipped with a log line, never abort
     # after a full replay.
     scopes: dict[str, tuple[bool, bool]] = {}
@@ -187,7 +187,7 @@ def main(
             if mismatch:
                 raise SystemExit(f"crisp differential failed for {name}: {mismatch}")
         else:
-            log.info("  %s differential: skipped (not/mean-grading/product present)", name)
+            log.info("  %s differential: skipped (negation/mean-grading/product present)", name)
 
         if 0 < verify_prune <= len(hold_pos):
             # Seeded spread sample (review #14.5): the old head slice
