@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import eval.rq1 as rq1  # noqa: E402
 from eval import evaluate, splits  # noqa: E402
+from eval.stability import level_name  # noqa: E402
 from motifql.degrees import libs_from_doc  # noqa: E402
 from motifql.graph import TemporalGraph  # noqa: E402
 from motifql.parser import parse_file  # noqa: E402
@@ -140,6 +141,7 @@ def main(
     budget_levels: Annotated[str, typer.Option(help="Levels for budget mode.")] = ",".join(f"{p}:{f}" for p, f in BUDGET_LEVELS),
     budgets: Annotated[str, typer.Option(help="Alerts/day budgets (budget mode).")] = "50,100,500,1000,5000",
     crisp_alpha: Annotated[str, typer.Option(help="Exact-arm α-cut: `emit`, `support` or float.")] = "emit",
+    save_scores: Annotated[Path | None, typer.Option(help="Budget mode: also write per-rung holdout scores here for eval/stability.py.")] = None,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     level_list = [tuple(float(x) for x in lv.split(":")) for lv in
@@ -236,6 +238,17 @@ def main(
                                              pl.lit(tag["gap_factor"]).alias("gap_factor")))
             binst_rows.append(binst.with_columns(pl.lit(tag["amount_pct"]).alias("amount_pct"),
                                                 pl.lit(tag["gap_factor"]).alias("gap_factor")))
+            if save_scores is not None:
+                # transfer_id-keyed rung scores for eval/stability.py
+                # (gap rungs realign by key, since drift reorders holdout).
+                save_scores.mkdir(parents=True, exist_ok=True)
+                days = pdf.get_column("day").to_numpy()
+                rung_frame = pl.DataFrame(
+                    {"transfer_id": tids[hold_pos], "day": days[hold_pos],
+                     **{k: v for k, v in scores.items()}})
+                rung_frame.write_parquet(save_scores / level_name(pct, gf))
+                log.info("  wrote %s (%d anchors x %d keys)",
+                         level_name(pct, gf), len(hold_pos), len(scores))
             continue
         for m in motifs_wanted:
             plan = plans[m]
