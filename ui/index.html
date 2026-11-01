@@ -274,6 +274,16 @@
     background: #3a4658;
   }
   #clock { font-family: var(--mono); font-size: 12px; color: var(--dim); min-width: 86px; text-align: right; }
+  .loop-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .loop-check input { accent-color: var(--green); margin: 0; }
   .tabs { display: flex; gap: 6px; }
   .tabs button {
     font-family: var(--mono);
@@ -589,6 +599,8 @@
       <div class="row">
         <button id="landing-go" class="primary">Find the trail →</button>
         <button id="landing-scripted" title="Deterministic rehearsal demo">Scripted demo</button>
+        <label class="loop-check" title="Replay the trace on end (demo hold)">
+          <input type="checkbox" id="landing-loop">Loop trace</label>
         <span class="hint">Enter ↵ to search · Shift+Enter newline</span>
       </div>
     </div>
@@ -698,6 +710,8 @@
       </button>
       <div id="progress" title="Scrub the trace"><div class="track" id="track"><div class="fill" id="fill"></div></div></div>
       <span id="clock">0.0s</span>
+      <label class="loop-check" title="Replay the trace on end (demo hold)">
+        <input type="checkbox" id="transport-loop">Loop</label>
     </div>
   </div>
 </main>

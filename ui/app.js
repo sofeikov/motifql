@@ -3,8 +3,8 @@
 
 'use strict';
 
-const HOP_DUR = 1.5;   // seconds per hop (chain witnesses)
-const MEMBER_DUR = 0.6; // seconds per member (group witnesses have many)
+const HOP_DUR = 1.2;   // seconds per hop (chain witnesses)
+const MEMBER_DUR = 0.5; // seconds per member (group witnesses have many)
 const INTRO = 0.5;     // pause before the trace starts
 const OUTRO = 0.6;     // hold on the final frame
 
@@ -128,6 +128,7 @@ function parseBootParams(search) {
     autoplay: q.get('autoplay') !== '0',
     autorun: q.get('autorun') !== '0',
     landing: q.get('landing') !== '0',
+    loop: q.get('loop') === '1',
   };
 }
 
@@ -211,6 +212,7 @@ const state = {
   witnesses: [], wi: 0, motif: '', compiled: false,
   composite: null, // {unionHops, shared, groups:[{label,motif,top_score,found,explanation,verdict,witness}]}
   compositeEvGroup: 0, // which shape the evasion sliders attack
+  loop: false, // replay the trace on end (demo hold + ?loop=1)
   playing: false, t: 0, raf: 0, lastTick: 0,
   geom: null, // {nodes: Map key->{x,y}, edges: [{path, len, label}], nodeEls}
   evasion: { noise: 0, gap: 1.0, timer: 0, curve: null, seq: 0 },
@@ -831,13 +833,28 @@ function tick(now) {
   state.lastTick = now;
   state.t += dt;
   if (state.t >= state.geom.dur) {
-    state.t = state.geom.dur;
-    renderFrame(state.t);
-    stopPlayer();
-    return;
+    if (state.loop) {
+      state.t = 0; // hold the demo on a living trace
+    } else {
+      state.t = state.geom.dur;
+      renderFrame(state.t);
+      stopPlayer();
+      return;
+    }
   }
   renderFrame(state.t);
   state.raf = requestAnimationFrame(tick);
+}
+
+/** Loop toggle (landing + transport checkboxes stay in sync). */
+function setLoop(on) {
+  state.loop = !!on;
+  $('landing-loop').checked = state.loop;
+  $('transport-loop').checked = state.loop;
+  const q = new URLSearchParams(location.search);
+  if (state.loop) q.set('loop', '1');
+  else q.delete('loop');
+  history.replaceState(null, '', `${location.pathname}?${q}`);
 }
 
 function play(fromStart) {
@@ -1167,6 +1184,8 @@ async function boot() {
   });
   $('landing-english').addEventListener('input', (ev) => autosize(ev.target));
   $('english').addEventListener('input', (ev) => autosize(ev.target));
+  $('landing-loop').addEventListener('change', (ev) => setLoop(ev.target.checked));
+  $('transport-loop').addEventListener('change', (ev) => setLoop(ev.target.checked));
   window.__chips = [];
   renderChips([]);
   // Evasion sliders: labels + URL update instantly, re-scoring debounced.
@@ -1203,6 +1222,9 @@ async function boot() {
     db.textContent = dataLine;
     $('landing-data').textContent = dataLine;
     const params = parseBootParams(location.search);
+    state.loop = params.loop;
+    $('landing-loop').checked = params.loop;
+    $('transport-loop').checked = params.loop;
     // ?sentence= + ?anchors= deep-link any demo (rehearsal links per pattern).
     // Stills (?at=) and ?landing=0 skip the landing; otherwise the scripted
     // demo auto-runs through it (skipped with ?autorun=0).

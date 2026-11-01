@@ -81,7 +81,7 @@ within 7 days…"*. Hit Enter — the UI dives into the workspace.
 > search engine finds the money trail across millions of
 > transfers.
 >
-> Two parts, and the distinction matters. Muse Spark is the
+> Two parts are important here. Muse Spark is the
 > *translator*: it turns the sentence into a query. The *engine*
 > is the product: it compiles that query, searches 5 million
 > transfers as a time-ordered graph, fuzzy-scores every
