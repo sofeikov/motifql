@@ -1,19 +1,40 @@
-# MotifQL
+# MotifQL — follow the money
 
 **Catch the laundering shapes that transaction-level models miss, and see
 the money trail behind every alert.**
 
-MotifQL is a small language for money-flow patterns: cycles, layering
-chains, scatter-gather. You describe the shape, Meta's Muse Spark writes it
-as a motif, and the engine scores every transfer against it. Each alert
-comes with its witness: the actual chain of transfers that matched, and how
-well each condition held.
-
-> Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026).
+> 🏆 Entry for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4,
+> 2026), **Indie Developer track** — "Push the Frontier" / "Build for
+> Your World".
 > **Pre-existing:** [ezrules](https://github.com/sofeikov/ezrules), the
 > author's open-source rules engine (used only through its HTTP API), and
 > IBM's AMLworld synthetic datasets (used for evaluation). **Everything in
 > this repository was built during the hackathon.**
+
+![Animated witness trace: a 3-hop money cycle lighting up hop by hop](docs/img/trace.gif)
+
+*The demo, in one loop: an analyst describes a pattern in English, Muse
+Spark writes the MotifQL motif, and the matching witness animates hop by
+hop — amounts, gaps and condition degrees on every step. Frames captured
+from the real UI ([demo](#demo)); the badge in the full screenshot reads
+"cached · Muse Spark · 1 attempt": a live model call served from the
+prompt-hash cache.*
+
+Three things to know:
+
+1. **English in, motif out.** Analysts don't write Cypher. They write
+   *"money leaves an account and comes back within 7 days"* — Spark
+   compiles it, and a repair loop feeds the compiler's errors back until
+   it builds. 47/47 precise descriptions compiled, 0.96 mean witness
+   overlap with hand-written motifs.
+2. **Fuzzy, not brittle.** Conditions grade 0–1 instead of passing or
+   failing, so a 50-hour hop scores lower instead of vanishing — and a
+   ±15% evasion wobble degrades the score instead of zeroing the rule.
+3. **Every alert explains itself.** Each transfer gets a score, the
+   witness chain that matched, per-condition degrees, and a one-paragraph
+   investigator narrative naming the weakest step.
+
+![Full demo UI: English box, Spark-written motif, witness triangle, narrative, evasion sliders](docs/img/demo.png)
 
 ## The problem
 
@@ -70,9 +91,16 @@ alerts per day.)
 
 You only find the best exact cut by sweeping thresholds against labels.
 The fuzzy motif ranks instead of cutting, so it gets there without the
-search, at every alert budget. Under evasion (±10–20% noise on amounts),
-early runs show the best exact rule collapsing faster than the fuzzy
-ranking; full curves are in progress.
+search, at every alert budget.
+
+![Evasion sliders: at +15% amount noise the fuzzy score degrades 0.718 to 0.357 while the exact rule cliffs 1 to 0](docs/img/evasion.png)
+
+*The same story, live on one witness: drag **Amount noise** to +15% and
+the fuzzy bar sinks 0.718→0.357 while the exact rule (cut at the emit
+threshold) has already cliffed 1→0. The UI caption says it plainly:
+synthetic noise on this witness only — not a full replay. Under evasion
+(±10–20% noise on amounts), early runs show the best exact rule collapsing
+faster than the fuzzy ranking; full curves are in progress.*
 
 ## Results so far
 
@@ -114,14 +142,22 @@ a location and a suggested fix, written for a model to act on.
 
 ## How it works
 
+```mermaid
+flowchart LR
+    EN["Analyst English"] --> SPARK["Muse Spark<br/>(Meta Model API)"]
+    SPARK -->|"motif"| COMP["Compiler<br/>grammar · AST · checks · plan"]
+    COMP -->|"errors + fix hints"| SPARK
+    COMP -->|"plan"| ENG["Streaming engine<br/>temporal graph + matcher"]
+    TX["Every transfer"] --> ENG
+    ENG --> OUT["score · witness · explanation"]
+    ENG -->|"misses"| DISC["Discovery agent<br/>proposes new motifs"]
+    DISC --> SPARK
+    ENG -->|"scores"| PROXY["ezrules proxy<br/>(optional downstream)"]
 ```
- English ──► Muse Spark ──► MotifQL ──► compiler ──► plan
-                 ▲  repair loop ◄── errors    │
-                 │                            ▼
-          discovery agent ◄── misses ── engine: temporal graph + matcher
-                                              │
-                         score · witness · explanation per transfer
-```
+
+*From [DESIGN.md](docs/DESIGN.md) §6–7: the compiler turns Spark's motif
+into a plan, the engine scores every transfer against it on a temporal
+graph, and misses feed a discovery agent that proposes new motifs.*
 
 - **Compiler:** a Lark grammar, a typed AST, static checks (bounds, units,
   scope) and a planner that splits conditions into ones that can prune the
