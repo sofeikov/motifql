@@ -696,5 +696,51 @@
         ]
       }
     ]
-  }
+  },
+  "chips": [
+    {
+      "key": "cycle",
+      "label": "Round trip",
+      "blurb": "Money leaves an account and comes back within 7 days",
+      "english": "Money leaves an account and comes back to it within 7 days, through 2 to 5 transfers. Every hop moves nearly the same amount (within 20% of the previous hop) with patient gaps (fully true to 1 day, false by 5 days). All conditions must hold; fire at 0.5.",
+      "anchor_tids": [
+        2012559
+      ]
+    },
+    {
+      "key": "fanout",
+      "label": "Fan-out",
+      "blurb": "One account pays many distinct accounts within 4 days",
+      "english": "Fan-out: one account pays at least 2 distinct accounts within 4 days. More payees score higher (0 at 3 or fewer, 1 at 8 or more). Fire at 0.5.",
+      "anchor_tids": []
+    },
+    {
+      "key": "chain",
+      "label": "Layering chain",
+      "blurb": "Money moves down a chain of 5–8 accounts, losing a little each hop",
+      "english": "A layering chain: money flows through 5 to 8 transfers to a different account within 10 days. Patient gaps (true to 1 day, false by 5 days), amounts within 25%. Fire at 0.5.",
+      "anchor_tids": [
+        1854446
+      ]
+    },
+    {
+      "key": "scatter",
+      "label": "Scatter-gather",
+      "blurb": "One source fans out to intermediaries who forward to one destination",
+      "english": "Scatter-gather: one source pays at least 2 intermediaries who forward to one destination within 7 days. Several intermediaries score higher (0 at 1, 1 at 3 or more) and the forwarded sums match the received sums within 20%. Fire at 0.5.",
+      "anchor_tids": [
+        578883
+      ]
+    },
+    {
+      "key": "gather",
+      "label": "Gather-scatter",
+      "blurb": "One account collects from many, then pays many out",
+      "english": "Gather-scatter: one account collects from at least 2 distinct accounts and pays at least 2 distinct accounts within 4 days. Several on each side score higher (0 at 1, 1 at 3 or more) and the two counts balance within 4. Fire at 0.5.",
+      "anchor_tids": [
+        418378
+      ]
+    }
+  ],
+  "verdict": "A round trip of 3 transfers returns to the starting account within 2.9d for an overall score of 0.718 with nearly the same amount each hop, weakest in the amount similarity at (0.718)."
 }

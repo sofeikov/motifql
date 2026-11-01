@@ -18,8 +18,10 @@ Required opening line (hackathon provenance, DESIGN.md §2):
 > still pay billions in fines. Why? Because laundering is a *team
 > sport* — money hopping through a network of accounts — while
 > today's software looks at *one transfer at a time*. MotifQL fixes
-> that: analysts describe the shape in English, AI writes the
-> detector, and every alert shows its money trail."
+> that: analysts describe the shape in English, AI translates it
+> into a query, and a fuzzy graph search engine finds the money
+> trail across millions of transfers — showing its work on every
+> alert."
 
 ## Full script (~180s)
 
@@ -69,21 +71,29 @@ On screen: animate a simple A→B→C→A triangle while talking. Then
 show one transfer row highlighted ("looks fine") vs the full
 shape ("looks criminal").
 
-### 0:50–1:05 — The solution in one breath (cut to demo UI, idle)
+### 0:50–1:10 — The solution in one breath (landing → workspace)
 
-> "MotifQL: describe the criminal shape in plain English, Muse
-> Spark writes the detector, and the engine scores every transfer
-> — returning not just a score, but the *money trail* behind it.
+Open on the landing: one chat box in the center of the screen,
+pre-filled with *"Money leaves an account and comes back to it
+within 7 days…"*. Hit Enter — the UI dives into the workspace.
+
+> "MotifQL: describe the criminal shape in plain English — and a
+> search engine finds the money trail across millions of
+> transfers.
 >
-> Three things make it different: it's fuzzy, so criminals can't
-> dodge it by waiting an extra hour. It runs live on the stream.
-> And every alert explains itself."
+> Two parts, and the distinction matters. Muse Spark is the
+> *translator*: it turns the sentence into a query. The *engine*
+> is the product: it compiles that query, searches 5 million
+> transfers as a time-ordered graph, fuzzy-scores every
+> candidate, and returns the single best money trail — with
+> proof. The model never touches the money. All finding happens
+> in the engine."
 
-Demo UI idle. The English box is pre-filled: *"Money leaves an
-account and comes back to it within 7 days…"*. Press **Scripted
-demo** (or let the auto-run play).
+Auto-run plays this by itself: landing reads ~1.1s, then the
+dive. (`?autorun=0` holds on the landing for a manual take;
+`?landing=0` skips it.)
 
-### 1:05–1:25 — Beat: Spark writes the motif (~20s)
+### 1:10–1:25 — Beat: Spark writes the motif (~15s)
 
 The Motif panel fills with genuine Muse Spark output (badge:
 *scripted · Muse Spark output* — a committed, verified model
@@ -91,16 +101,17 @@ reply, so the recording never depends on the network).
 
 Narration:
 
-> "I typed one English sentence. Spark wrote the detector: the
-> shape to match, the fuzzy conditions, the threshold. The
-> analyst never touches query code."
+> "One English sentence in, one detector out: the shape to
+> match, the fuzzy conditions, the threshold. The analyst never
+> touches query code — and Spark's job is done. Everything after
+> this is the engine."
 
 Point at the three parts: the shape (`match`), the fuzzy
 conditions (`soft`), the threshold (`emit`). Badge meanings:
 *live* = just compiled, *cached* = prompt-hash cache hit,
 *scripted* = committed fallback.
 
-### 1:25–1:50 — Beat: the trace (~25s)
+### 1:25–1:50 — Beat: the trace — the engine shows its work (~25s)
 
 The witness plays hop by hop on train CYCLE instance 102 (score
 0.718, FIRES): each hop draws in amber with its amount and gap,
@@ -109,18 +120,22 @@ show both conditions holding (gap 0.841, amount 0.718).
 
 Narration:
 
-> "And here's the payoff: not a risk score from a black box, but
-> the actual money trail — hop by hop, amounts, delays, and how
-> strongly each step matches. Plus a one-paragraph story for the
-> investigator, with the weakest link flagged."
+> "And here's the payoff — all engine, no LLM. Not a risk score
+> from a black box, but the actual money trail the search found:
+> hop by hop, amounts, delays, how strongly each step matches.
+> The score line even shows the search work — dozens of graph
+> expansions behind this one witness. And on top, a one-line
+> verdict saying why it matches, plus the full investigator
+> paragraph with the weakest link flagged."
 
-Under the stage, the investigator narrative retells the witness
-in one paragraph with the weakest step badged (hop 3 — committed
-for the scripted take, model-written for live compiles). End
-frame: the closed triangle, "Trace complete — 3 hops, span 2.9d".
-Scrub or step with the transport if the take needs a still;
-`?at=SECONDS` deep-links any moment, narrative included (total
-5.6s).
+Gesture at the score meta (`51 expansions`) when you say
+"search work". Under the stage, the investigator narrative
+retells the witness in one paragraph with the weakest step
+badged (hop 3 — committed for the scripted take, model-written
+for live compiles). End frame: the closed triangle, "Trace
+complete — 3 hops, span 2.9d". Scrub or step with the transport
+if the take needs a still; `?at=SECONDS` deep-links any moment,
+narrative included (total 5.6s).
 
 ### 1:50–2:25 — Beat: evasion (~35s)
 
@@ -134,8 +149,9 @@ Narration:
 > one to zero. Gone. Our fuzzy score degrades gracefully,
 > 0.72 to 0.36 — still flagging it. Same when they slow down:
 > double the delays, and the exact rule dies while we still
-> catch it. Criminals evade thresholds for a living. Don't give
-> them one."
+> catch it. This is the engine's fuzzy matcher at work — every
+> condition grades 0 to 1 instead of passing or failing.
+> Criminals evade thresholds for a living. Don't give them one."
 
 What happens on screen: the fuzzy bar sinks 0.718→0.357 while
 the exact bar (α=emit) has already cliffed 1→0 at +10% — the
@@ -162,8 +178,11 @@ Cut away from the UI to one results slide. Keep it to two lines:
 > cycles, 13 to 0 on layering chains. And the model can't show
 > its work. We can.
 >
-> Plus: 47 out of 47 English descriptions compiled into working
-> detectors. Analysts type sentences; the system does the rest."
+> The engine earns it: exact best-trail search with score
+> pruning, live on the stream at ~15× headroom over peak
+> traffic — and 47 out of 47 English descriptions compiled into
+> working detectors. Analysts type sentences; the engine does
+> the rest."
 
 | Pattern | MotifQL (3 motifs) | LightGBM |
 |---|---|---|
@@ -198,8 +217,8 @@ PYTHONPATH=src uv run python -m motifql.server --demo --port 8000
 ```
 
 Warmup takes ~2s (full HI-Small graph build). Open
-<http://127.0.0.1:8000/> — the scripted demo auto-runs on load
-(~0.3s to first paint; the witness then plays for 5.6s).
+<http://127.0.0.1:8000/> — the landing reads ~1.1s, dives into
+the workspace, and the witness plays for 5.6s.
 
 Record at 1600×1000 or wider; the layout collapses below 900px.
 
@@ -226,15 +245,31 @@ Record at 1600×1000 or wider; the layout collapses below 900px.
 - Slow box: warmup is one 5M-row build (~2s here); the trace
   itself is microseconds per anchor (fast path, no appends), and
   each slider tick re-scores one witness only (<500ms).
-- `?autorun=0` opens idle (no auto-run); `?autoplay=0` renders
-  frame 0 without playing; reduced-motion users get the final
-  frame. If a slider take misfires, cut to the `?at=99&noise=…`
-  stills — same pixels, zero timing risk.
+- `?autorun=0` holds on the landing (manual take: Enter dives
+  in); `?landing=0` skips it; `?at=` stills skip it automatically.
+  `?autoplay=0` renders frame 0 without playing; reduced-motion
+  users get the final frame (and an instant transition). If a
+  slider take misfires, cut to the `?at=99&noise=…` stills — same
+  pixels, zero timing risk.
 
 ## Checklist before recording
 
 - [ ] `pytest tests/test_compile.py tests/test_server.py tests/test_evasion.py` green
-- [ ] Boot prints the demo card, page auto-plays the triangle
+- [ ] Boot prints the demo card, landing shows, page dives in and auto-plays the triangle
+- [ ] All five "Try one" chips fire (cycle 0.718 / fan-out 1.0 / chain 0.809 / scatter 0.998 / gather 0.75)
+
+## Combo demo (chain → gather, anchor 418378)
+
+Train RANDOM instance 10: a 5-hop layering chain (0.698) whose
+tail feeds a 15-payment gather (0.75) — two shapes, one anchor,
+two shared transfers. Demo as two takes/tabs with explicit
+anchors (explicit `?anchors=` overrides the chip pins):
+
+- Chain: `?sentence=`*chain-basic*`&anchors=418378&landing=0`
+- Gather: click the Gather chip (or the same link pattern)
+
+Narration: "Same money, two shapes — the chain's tail lands in
+the gather. One anchor, two queries, both fire."
 - [ ] Badge reads *scripted* or *cached* (never mid-take surprises)
 - [ ] `?at=99` shows the completed trace (title-card still)
 - [ ] `?at=99&noise=15&gap=1` shows fuzzy 0.357 / exact 0 (evasion still)

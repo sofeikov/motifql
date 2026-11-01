@@ -45,6 +45,16 @@ def test_healthz() -> None:
     assert r.json() == {"ok": True, "motifs": engine.motif_names, "edges": 0}
 
 
+def test_demo_config_serves_chips() -> None:
+    client, _ = _client(lambda request: httpx.Response(200, json={}))
+    r = client.get("/demo-config")
+    assert r.status_code == 200
+    chips = r.json()["chips"]
+    assert [c["key"] for c in chips] == ["cycle", "fanout", "chain",
+                                         "scatter", "gather"]
+    assert all(c["english"] for c in chips)
+
+
 def test_score_cycle() -> None:
     client, _ = _client(lambda request: httpx.Response(200, json={}))
     out = None

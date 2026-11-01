@@ -202,6 +202,11 @@
   }
   #narrative[hidden] { display: none; }
   #narrative p { margin: 0 0 4px; }
+  #narrative .lede {
+    color: var(--text);
+    font-size: 14.5px;
+    margin-bottom: 6px;
+  }
   #narrative .weakest {
     color: var(--amber);
     font-weight: 700;
@@ -421,16 +426,147 @@
     main { grid-template-columns: 1fr; }
     #side { border-right: none; border-bottom: 1px solid var(--line); }
   }
+  /* Landing: centered chat box. body.landing hides the workspace;
+     submitting transitions to the full UI. */
+  #landing {
+    display: none;
+    min-height: calc(100% - 56px);
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px 60px;
+    background:
+      radial-gradient(circle at 50% 30%, #101823 0%, var(--bg) 70%);
+  }
+  body.landing #landing { display: flex; }
+  body.landing header .workspace-only,
+  body.landing main { display: none; }
+  #landing.leaving {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.99);
+    transition: opacity 0.32s ease-in, transform 0.32s ease-in;
+  }
+  body.workspace-enter header,
+  body.workspace-enter main { animation: workspace-in 0.45s ease-out; }
+  @keyframes workspace-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #landing.leaving { transition: none; }
+    body.workspace-enter header,
+    body.workspace-enter main { animation: none; }
+  }
+  .landing-col {
+    width: 100%;
+    max-width: 660px;
+  }
+  .landing-col h1 {
+    margin: 0 0 6px;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+  .landing-col h1 .q { color: var(--green); }
+  .landing-sub {
+    margin: 0 0 22px;
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1.55;
+    max-width: 560px;
+  }
+  .landing-sub strong { color: var(--text); font-weight: 600; }
+  .chatbox {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 6px 6px 6px 0;
+  }
+  .chatbox:focus-within { border-color: var(--green-dim); }
+  .chatbox textarea {
+    border: none;
+    background: transparent;
+    min-height: 96px;
+    padding: 12px 16px 6px;
+    font-size: 14.5px;
+  }
+  .chatbox textarea:focus { border: none; }
+  .chatbox .row {
+    margin: 4px 8px 8px 16px;
+    align-items: center;
+  }
+  .chatbox .hint {
+    margin-left: auto;
+    font-size: 11.5px;
+    color: var(--faint);
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+  .examples { margin-top: 14px; }
+  .examples .ex-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 8px;
+  }
+  .examples button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font-weight: 400;
+    font-size: 13px;
+    color: var(--dim);
+    margin-bottom: 6px;
+    padding: 9px 12px;
+  }
+  .examples button:hover:not(:disabled) { color: var(--text); }
+  .examples button b { color: var(--green); font-weight: 600; margin-right: 8px; }
+  .landing-foot {
+    margin-top: 22px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--faint);
+  }
+  .landing-foot .sep { margin: 0 8px; }
+  #new-search-btn { font-weight: 400; }
 </style>
 </head>
-<body>
+<body class="landing">
 <header>
   <h1>MotifQL <span class="q">·</span> follow the money</h1>
-  <p>fuzzy money-flow motifs, written by Muse Spark</p>
+  <p>fuzzy money-flow search engine — queries written by Muse Spark</p>
   <span class="spacer"></span>
-  <span class="badge" id="source-badge" hidden></span>
-  <span class="badge" id="data-badge" hidden></span>
+  <button id="new-search-btn" class="workspace-only" title="Back to the search box">← New search</button>
+  <span class="badge workspace-only" id="source-badge" hidden></span>
+  <span class="badge workspace-only" id="data-badge" hidden></span>
 </header>
+<div id="landing">
+  <div class="landing-col">
+    <h1>MotifQL <span class="q">·</span> follow the money</h1>
+    <p class="landing-sub">Describe a laundering pattern in <strong>plain
+    English</strong>. The engine searches millions of transfers for that
+    money trail — and shows its work, hop by hop.</p>
+    <div class="chatbox">
+      <textarea id="landing-english" spellcheck="false"
+        placeholder="Money leaves an account and comes back to it…"></textarea>
+      <div class="row">
+        <button id="landing-go" class="primary">Find the trail →</button>
+        <button id="landing-scripted" title="Deterministic rehearsal demo">Scripted demo</button>
+        <span class="hint">Enter ↵ to search · Shift+Enter newline</span>
+      </div>
+    </div>
+    <div class="examples" id="examples-sec" hidden>
+      <div class="ex-label">Try one</div>
+      <div id="examples-list"></div>
+    </div>
+    <div class="landing-foot">
+      <span id="landing-data">loading transfers…</span>
+      <span class="sep">·</span>
+      <span>fuzzy temporal search — the LLM writes the query, the engine does the finding</span>
+    </div>
+  </div>
+</div>
 <main>
   <div id="side">
     <section>

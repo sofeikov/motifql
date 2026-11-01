@@ -43,8 +43,12 @@ class Canned:
     english: str
     motif: str
     narrative: str | None = None  # committed story for the scripted anchor
+    verdict: str | None = None  # committed one-line verdict, same anchor
     narrative_anchor_tid: int | None = None
     evasion: dict | None = None  # precomputed slider curve, if committed
+    chips: list = field(default_factory=list)  # landing "Try one" demos:
+    # [{key, label, blurb, english, anchor_tids}] — path motifs carry
+    # pinned truth anchors (the random sample finds ~none for them).
 
 
 @dataclass
@@ -57,6 +61,7 @@ class CompileResult:
     witnesses: list[MotifResult]
     narratives: list[str | None] | None = None  # parallel to witnesses
     narrative_weakest: list[int | None] | None = None  # 1-based hop or None
+    verdicts: list[str | None] | None = None  # one-line why-it-matches
 
 
 def load_canned(path: str | Path) -> Canned | None:
@@ -67,8 +72,10 @@ def load_canned(path: str | Path) -> Canned | None:
     obj = json.loads(p.read_text())
     return Canned(english=obj["english"], motif=obj["motif"],
                   narrative=obj.get("narrative"),
+                  verdict=obj.get("verdict"),
                   narrative_anchor_tid=obj.get("narrative_anchor_tid"),
-                  evasion=obj.get("evasion_curve"))
+                  evasion=obj.get("evasion_curve"),
+                  chips=obj.get("chips") or [])
 
 
 def _witness_dict(w: MotifResult) -> dict:
@@ -131,25 +138,27 @@ def compile_english(english: str, engine: Engine, *,
     assert result.compiled is not None
     witnesses = _witnesses(engine, result.compiled, n_witnesses, sample_n,
                            sample_seed, anchor_tids or [])
-    narratives, weakest = _narratives(text, result.text, witnesses,
-                                      narrate_complete, canned)
+    narratives, weakest, verdicts = _narratives(text, result.text, witnesses,
+                                                narrate_complete, canned)
     return CompileResult(result.text, True, result.attempts, result.errors,
-                         source, witnesses, narratives, weakest)
+                         source, witnesses, narratives, weakest, verdicts)
 
 
 def _narratives(english: str, motif_text: str, witnesses: list[MotifResult],
                 narrate_complete, canned: Canned | None
-                ) -> tuple[list[str | None], list[int | None]]:
-    """Per-witness stories; the canned anchor needs no model call."""
+                ) -> tuple[list[str | None], list[int | None],
+                           list[str | None]]:
+    """Per-witness stories + verdicts; the canned anchor needs no model."""
     stories: list[str | None] = []
     steps: list[int | None] = []
+    verdicts: list[str | None] = []
     for w in witnesses:
         weak = narrate_mod.weakest(w.explanation)
         steps.append(weak[2] if weak else None)
         anchor = w.witness[-1].transfer_id if w.witness else None
-        if (canned is not None and canned.narrative
-                and anchor is not None
-                and anchor == canned.narrative_anchor_tid):
+        is_canned = (canned is not None and anchor is not None
+                     and anchor == canned.narrative_anchor_tid)
+        if is_canned and canned.narrative:
             stories.append(canned.narrative)
         elif narrate_complete is None:
             stories.append(None)
@@ -163,7 +172,19 @@ def _narratives(english: str, motif_text: str, witnesses: list[MotifResult],
             stories.append(res.text if res is not None else None)
             if res is not None and res.text is not None:
                 steps[-1] = res.weakest_step
-    return stories, steps
+        if is_canned and canned.verdict:
+            verdicts.append(canned.verdict)
+        elif narrate_complete is None:
+            verdicts.append(None)
+        else:
+            try:
+                vres = narrate_mod.summarize(english, motif_text,
+                                             _witness_dict(w),
+                                             complete=narrate_complete)
+            except Exception:
+                vres = None
+            verdicts.append(vres.text if vres is not None else None)
+    return stories, steps, verdicts
 
 
 def _witnesses(engine: Engine, compiled, n_witnesses: int, sample_n: int,

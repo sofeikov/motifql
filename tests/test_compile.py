@@ -140,6 +140,45 @@ def test_committed_canned_narrative_covers_scripted_anchor() -> None:
     assert "weakest step is hop" in canned.narrative
 
 
+def test_committed_canned_verdict_covers_scripted_anchor() -> None:
+    # The recorded demo leads with a plain-English verdict, committed
+    # verbatim (genuine Spark output, verified): no predicate jargon,
+    # no accounts, no amounts — those stay in the paragraph below it.
+    canned = load_canned(UI_DIR / "canned.json")
+    assert canned is not None and canned.verdict
+    assert "0.718" in canned.verdict  # quotes the scripted score
+    for jargon in ("DistinctArg", "count(", "leg1", "001/", "$",
+                   "2022-", "transfer #"):
+        assert jargon not in canned.verdict, jargon
+
+
+def test_committed_chips_pin_path_motif_anchors() -> None:
+    # The landing "Try one" chips are server-driven (canned.json is the
+    # single source of truth). Path motifs find ~nothing on the random
+    # sample (cycle 0/3000, chain 2/3000 nonzero on HI-Small seed 7),
+    # so cycle + chain carry pinned truth anchors; fan-out searches
+    # unpinned (1202/3000 nonzero). Scatter-gather pins a rich truth
+    # witness for the visual demo.
+    canned = load_canned(UI_DIR / "canned.json")
+    assert canned is not None
+    chips = canned.chips
+    assert [c["key"] for c in chips] == ["cycle", "fanout", "chain",
+                                         "scatter", "gather"]
+    by_key = {c["key"]: c for c in chips}
+    for c in chips:
+        assert c["label"] and c["blurb"] and c["english"]
+        assert all(isinstance(t, int) and t > 0
+                   for t in c["anchor_tids"])
+    assert by_key["cycle"]["english"] == canned.english
+    assert by_key["cycle"]["anchor_tids"] == [2012559]
+    assert by_key["chain"]["anchor_tids"] == [1854446]
+    assert by_key["scatter"]["anchor_tids"] == [578883]
+    # Gather shares its anchor with a layering chain (combo demo: the
+    # chain's tail feeds the gather — chain-basic fires 0.698 there).
+    assert by_key["gather"]["anchor_tids"] == [418378]
+    assert by_key["fanout"]["anchor_tids"] == []
+
+
 def test_pos_of() -> None:
     eng = _engine()
     g = eng.graph
@@ -173,17 +212,20 @@ def test_narrative_transport_down_fails_closed() -> None:
                           narrate_complete=_down, anchor_tids=[2])
     assert res.compiled is True  # narration never breaks the compile
     assert res.narratives == [None]
+    assert res.verdicts == [None]
     assert res.narrative_weakest == [3]  # weakest is deterministic anyway
 
 
 def test_no_narrate_transport_sketches_none() -> None:
     res = compile_english("cycle", _engine(), complete=_ok, anchor_tids=[2])
     assert res.narratives == [None]
+    assert res.verdicts == [None]
 
 
 def test_canned_narrative_covers_scripted_anchor_offline() -> None:
     canned = Canned(english="the scripted sentence", motif=CAND,
-                    narrative="Canned story.", narrative_anchor_tid=2)
+                    narrative="Canned story.", verdict="Canned verdict.",
+                    narrative_anchor_tid=2)
     seen = []
 
     def spy(messages):
@@ -195,6 +237,7 @@ def test_canned_narrative_covers_scripted_anchor_offline() -> None:
                           anchor_tids=[2])
     assert (res.compiled, res.source) == (True, "canned")
     assert res.narratives == ["Canned story."]
+    assert res.verdicts == ["Canned verdict."]
     assert seen == []  # the scripted anchor needs no model call
     # Anchors the canned story doesn't cover still go live.
     other = Canned(english="the scripted sentence", motif=CAND,
@@ -216,6 +259,7 @@ def test_route_carries_narratives() -> None:
     first = body["witnesses"][0]
     assert first["narrative"] is not None and "$1,000" in first["narrative"]
     assert first["narrative_weakest_step"] == 3
+    assert first["verdict"] is not None  # same stub transport
     # Without a narrate transport there is no story, but the weakest
     # step is deterministic from the degrees, so it still ships.
     app = create_app(_engine(), complete_fn=_ok,
@@ -223,6 +267,7 @@ def test_route_carries_narratives() -> None:
     first = TestClient(app).post(
         "/compile", json={"english": "a cycle", "anchor_tids": [2]}).json()["witnesses"][0]
     assert first["narrative"] is None
+    assert first["verdict"] is None
     assert first["narrative_weakest_step"] == 3
 
 

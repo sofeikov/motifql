@@ -111,7 +111,7 @@ function totalDur(n, unit) { return INTRO + n * (unit || HOP_DUR) + OUTRO; }
 
 const EVASION_SEED = 12345; // pinned: canned curve + live path share the draws
 
-/** Boot deep-links: ?sentence=, ?anchors=tid,.. ?at=sec, ?noise=pct, ?gap=factor, ?autoplay=0, ?autorun=0. */
+/** Boot deep-links: ?sentence=, ?anchors=tid,.. ?at=sec, ?noise=pct, ?gap=factor, ?autoplay=0, ?autorun=0, ?landing=0. */
 function parseBootParams(search) {
   const q = new URLSearchParams(search);
   const anchors = (q.get('anchors') || '').split(',')
@@ -127,7 +127,37 @@ function parseBootParams(search) {
     gap: Number.isFinite(gap) ? Math.max(1, Math.min(2, gap)) : 1.0,
     autoplay: q.get('autoplay') !== '0',
     autorun: q.get('autorun') !== '0',
+    landing: q.get('landing') !== '0',
   };
+}
+
+/** Pinned truth anchors for known demo sentences (path motifs find
+ * ~nothing on the random sample, so their chips carry anchors). */
+function chipAnchorsFor(text) {
+  const chips = window.__chips || [];
+  const k = (text || '').trim();
+  const hit = chips.find((c) => c.english.trim() === k);
+  return hit ? (hit.anchor_tids || []) : [];
+}
+
+/** Render the landing "Try one" chips from /demo-config. */
+function renderChips(chips) {
+  const list = $('examples-list');
+  list.innerHTML = '';
+  (chips || []).forEach((c) => {
+    const b = document.createElement('button');
+    b.setAttribute('data-ex', c.key);
+    const label = document.createElement('b');
+    label.textContent = c.label;
+    b.appendChild(label);
+    b.appendChild(document.createTextNode(c.blurb));
+    b.onclick = () => {
+      $('landing-english').value = c.english;
+      $('landing-english').focus();
+    };
+    list.appendChild(b);
+  });
+  $('examples-sec').hidden = list.children.length === 0;
 }
 
 /** Evasion caption: "+15% noise ×1.50 gaps: fuzzy 0.718→0.357, exact 1→0". */
@@ -194,9 +224,46 @@ async function api(path, body) {
 function setBusy(busy, msg) {
   $('compile-btn').disabled = busy;
   $('scripted-btn').disabled = busy;
+  $('landing-go').disabled = busy;
+  $('landing-scripted').disabled = busy;
   $('caption').innerHTML = busy
     ? `<span class="spin"></span><span class="dim">${esc(msg)}</span>`
     : '';
+}
+
+/** Landing → workspace transition (instant under reduced motion). */
+function enterWorkspace() {
+  if (!document.body.classList.contains('landing')) return Promise.resolve();
+  const landing = $('landing');
+  const swap = () => {
+    document.body.classList.remove('landing');
+    document.body.classList.add('workspace-enter');
+    landing.classList.remove('leaving');
+  };
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    swap();
+    return Promise.resolve();
+  }
+  landing.classList.add('leaving');
+  return new Promise((resolve) => setTimeout(() => { swap(); resolve(); }, 330));
+}
+
+function backToLanding() {
+  stopPlayer();
+  $('landing-english').value = $('english').value;
+  document.body.classList.remove('workspace-enter');
+  document.body.classList.add('landing');
+  setTimeout(() => $('landing-english').focus(), 60);
+}
+
+/** Submit the landing chat box: dive into the workspace, then compile. */
+async function landingSubmit(english, anchors) {
+  const text = (english !== undefined ? english : $('landing-english').value).trim();
+  if (!text) return;
+  $('english').value = text;
+  $('landing-english').value = text;
+  await enterWorkspace();
+  await runCompile(text, anchors || []);
 }
 
 function showError(where, err) {
@@ -246,10 +313,11 @@ function renderDegrees(w) {
   $('degrees-sec').hidden = (w.explanation || []).length === 0;
 }
 
-/** Narrative paragraph HTML (pure: node-harnessable). Empty when none. */
-function narrativeHTML(narrative, weakestStep) {
-  if (!narrative) return '';
-  let html = `<p>${esc(narrative)}</p>`;
+/** Verdict lede + narrative paragraph HTML (pure: node-harnessable). */
+function narrativeHTML(narrative, weakestStep, verdict) {
+  if (!narrative && !verdict) return '';
+  let html = verdict ? `<p class="lede">${esc(verdict)}</p>` : '';
+  if (narrative) html += `<p>${esc(narrative)}</p>`;
   if (Number.isInteger(weakestStep)) {
     html += `<span class="weakest">Weakest step: hop ${weakestStep}</span>`;
   }
@@ -258,7 +326,7 @@ function narrativeHTML(narrative, weakestStep) {
 
 function renderNarrative(w) {
   const box = $('narrative');
-  const html = narrativeHTML(w.narrative, w.narrative_weakest_step);
+  const html = narrativeHTML(w.narrative, w.narrative_weakest_step, w.verdict);
   box.hidden = !html;
   box.innerHTML = html;
 }
@@ -273,8 +341,12 @@ function renderScore(w) {
   const unitWord = isChain(hops) ? 'hop' : 'member';
   const span = hops.length > 1
     ? fmtGap(hops[hops.length - 1].timestamp - hops[0].timestamp) : '–';
+  // Engine proof: the search work behind this witness, not the LLM.
+  const exp = Number.isInteger(w.expansions) && w.expansions > 0
+    ? ` · ${w.expansions.toLocaleString('en-US')} expansions` : '';
+  const trunc = w.truncated ? ' · truncated' : '';
   $('score-meta').textContent =
-    `${hops.length} ${unitWord}${hops.length === 1 ? '' : 's'} · span ${span} · anchor #${hops.length ? hops[hops.length - 1].transfer_id : '–'}`;
+    `${hops.length} ${unitWord}${hops.length === 1 ? '' : 's'} · span ${span} · anchor #${hops.length ? hops[hops.length - 1].transfer_id : '–'}${exp}${trunc}`;
 }
 
 function edgeCurve(x1, y1, x2, y2, cx, cy, closed) {
@@ -653,6 +725,9 @@ function selectWitness(i, autoplay) {
 }
 
 async function runCompile(english, anchorTids) {
+  if (!anchorTids || !anchorTids.length) {
+    anchorTids = chipAnchorsFor(english); // demo sentences pin truth anchors
+  }
   setBusy(true, 'Consulting Muse Spark…');
   try {
     const res = await api('/compile', {
@@ -723,6 +798,18 @@ async function boot() {
   };
   $('compile-btn').onclick = () => runCompile($('english').value, []);
   $('scripted-btn').onclick = () => runCompile(window.__demoEnglish, window.__demoAnchors);
+  $('new-search-btn').onclick = backToLanding;
+  $('landing-go').onclick = () => landingSubmit();
+  $('landing-scripted').onclick = () =>
+    landingSubmit(window.__demoEnglish, window.__demoAnchors);
+  $('landing-english').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      landingSubmit();
+    }
+  });
+  window.__chips = [];
+  renderChips([]);
   // Evasion sliders: labels + URL update instantly, re-scoring debounced.
   const bootParams = parseBootParams(location.search);
   state.evasion.noise = Math.round(bootParams.noise);
@@ -744,23 +831,47 @@ async function boot() {
     const [cfg, health] = await Promise.all([api('/demo-config'), api('/healthz')]);
     window.__demoEnglish = cfg.english;
     window.__demoAnchors = cfg.anchor_tids || [];
+    window.__chips = cfg.chips || [];
+    renderChips(window.__chips);
     state.evasion.curve = cfg.evasion_curve || null;
     $('english').value = cfg.english || '';
+    $('landing-english').value = cfg.english || '';
+    const dataLine = `${health.edges.toLocaleString('en-US')} transfers · ${health.motifs.length} motifs`;
     const db = $('data-badge');
     db.hidden = false;
-    db.textContent = `${health.edges.toLocaleString('en-US')} transfers · ${health.motifs.length} motifs`;
+    db.textContent = dataLine;
+    $('landing-data').textContent = dataLine;
     const params = parseBootParams(location.search);
-    // ?sentence= + ?anchors= deep-link any demo (rehearsal links per pattern);
-    // otherwise the scripted demo auto-runs (skipped with ?autorun=0).
+    // ?sentence= + ?anchors= deep-link any demo (rehearsal links per pattern).
+    // Stills (?at=) and ?landing=0 skip the landing; otherwise the scripted
+    // demo auto-runs through it (skipped with ?autorun=0).
     const english = params.sentence || cfg.english;
-    if (params.sentence) $('english').value = params.sentence;
+    if (params.sentence) {
+      $('english').value = params.sentence;
+      $('landing-english').value = params.sentence;
+    }
+    const skipLanding = !params.landing || params.at !== null;
+    if (skipLanding) document.body.classList.remove('landing');
     if (english && params.autorun) {
-      await runCompile(english,
-        params.anchors.length ? params.anchors : window.__demoAnchors);
+      const anchors = params.anchors.length ? params.anchors
+        : window.__demoAnchors;
+      if (skipLanding) {
+        await runCompile(english, anchors);
+      } else {
+        // Let the landing read on camera, then dive into the workspace.
+        await new Promise((r) => setTimeout(r, 1100));
+        await enterWorkspace();
+        await runCompile(english, anchors);
+      }
+    } else if (!skipLanding) {
+      $('landing-english').focus();
     }
   } catch (err) {
     setBusy(false);
     showError('motif-box', err);
+    if (document.body.classList.contains('landing')) {
+      $('landing-data').textContent = `demo unavailable: ${err.message || err}`;
+    }
   }
 }
 

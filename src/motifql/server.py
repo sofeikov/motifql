@@ -76,6 +76,7 @@ class ResultOut(BaseModel):
     expansions: int = 0
     narrative: str | None = None
     narrative_weakest_step: int | None = None
+    verdict: str | None = None
 
 
 def _hop_out(h: WitnessHop) -> HopOut:
@@ -85,13 +86,14 @@ def _hop_out(h: WitnessHop) -> HopOut:
 
 
 def _result_out(r: MotifResult, narrative: str | None = None,
-                weakest_step: int | None = None) -> ResultOut:
+                weakest_step: int | None = None,
+                verdict: str | None = None) -> ResultOut:
     return ResultOut(motif=r.motif, found=r.found, score=r.score,
                      top_score=r.top_score,
                      witness=[_hop_out(h) for h in r.witness],
                      explanation=r.explanation, truncated=r.truncated,
                      expansions=r.expansions, narrative=narrative,
-                     narrative_weakest_step=weakest_step)
+                     narrative_weakest_step=weakest_step, verdict=verdict)
 
 
 class CompileIn(BaseModel):
@@ -148,7 +150,8 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
         return {"english": canned.english if canned else "",
                 "anchor_tids": [DEMO_ANCHOR_TID] if canned else [],
                 "motifs": engine.motif_names,
-                "evasion_curve": canned.evasion if canned else None}
+                "evasion_curve": canned.evasion if canned else None,
+                "chips": canned.chips if canned else []}
 
     @app.post("/compile")
     def compile(req: CompileIn) -> JSONResponse:
@@ -162,12 +165,15 @@ def create_app(engine: Engine, upstream_url: str = DEFAULT_UPSTREAM,
             return JSONResponse({"detail": str(e)}, status_code=e.status_code)
         narratives = res.narratives or [None] * len(res.witnesses)
         weakest = res.narrative_weakest or [None] * len(res.witnesses)
+        verdicts = res.verdicts or [None] * len(res.witnesses)
         return JSONResponse({
             "motif": res.motif, "compiled": res.compiled,
             "attempts": res.attempts, "errors": res.errors,
             "source": res.source,
-            "witnesses": [_result_out(w, narrative=n, weakest_step=s).model_dump()
-                          for w, n, s in zip(res.witnesses, narratives, weakest)],
+            "witnesses": [_result_out(w, narrative=n, weakest_step=s,
+                                      verdict=v).model_dump()
+                          for w, n, s, v in zip(res.witnesses, narratives,
+                                                weakest, verdicts)],
         })
 
     @app.post("/perturb")

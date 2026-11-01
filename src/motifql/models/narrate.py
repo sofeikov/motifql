@@ -2,13 +2,15 @@
 
 One-paragraph investigator stories per witness: what moved, through
 which accounts, over how long, how close each condition held, and the
-weakest step. Muse Spark writes from an extractive witness table;
-every call goes through the Spark client, so prompts and replies are
-cached on disk by prompt hash exactly like compiler calls.
+weakest step. Each story leads with a one-line verdict — what matched
+and WHY it qualifies, in plain words, no account numbers. Muse Spark
+writes both from an extractive witness table; every call goes through
+the Spark client, so prompts and replies are cached on disk by prompt
+hash exactly like compiler calls.
 
 Fail closed: missing witness data, a model error, a `CANNOT NARRATE`
-reply, or a narrative that fails verification (an amount or date not
-in the witness) yields NO narrative — never an invented one.
+reply, or text that fails verification (an amount or date not in the
+witness) yields NO text — never an invented one.
 """
 
 from __future__ import annotations
@@ -43,6 +45,32 @@ Use ONLY figures from it: write amounts EXACTLY as shown ($1,000), dates \
 EXACTLY as shown (2022-09-03), accounts EXACTLY as shown (001/A). Never \
 invent, round differently, or carry a figure from one transfer to \
 another. Never add transfers, accounts, or dates not in the table.
+
+If any fact you need is missing from the table, reply with exactly: \
+CANNOT NARRATE"""
+
+VERDICT_SYSTEM = """\
+You write one-line verdicts for money-flow witnesses: 1-2 plain-text \
+sentences, no markdown, no bullets. Say WHAT matched and WHY it \
+qualifies, in the analyst's own words (see the ANALYST line): the \
+shape (a round trip, a layering chain, a fan-out, a scatter-gather, \
+a gather), the key facts (how many hops or intermediaries, whether \
+amounts or sums roughly match, the overall score), and the weakest \
+condition in plain words with its quoted degree.
+
+FORBIDDEN: account numbers, transfer ids, individual amounts, \
+timestamps, and predicate code names. Never write things like \
+count(...), DistinctArg, leg1, or gap is patient — translate every \
+condition into words ("the balance of senders and recipients", "the \
+hop delays", "the amount similarity"). Describe sums qualitatively \
+("roughly equal"); never state totals (they are not in the table). \
+You may quote the overall score and condition degrees (0.998) as shown.
+
+EXTRACTIVE RULES. The witness table below is your only source of facts. \
+Take every count from the DISTINCT line; never count members by hand \
+(transfers repeat accounts). Any figure you use must appear in the \
+table exactly as shown. Never invent or carry a figure from one \
+transfer to another.
 
 If any fact you need is missing from the table, reply with exactly: \
 CANNOT NARRATE"""
@@ -227,30 +255,26 @@ def verify_narrative(text: str, witness: dict) -> list[str]:
     return issues
 
 
-def narrate(english: str, motif_text: str, witness: dict, *,
-            complete=spark_complete, strict: bool = True) -> NarrateResult:
-    """Write one witness narrative, failing closed (None, never invented).
-
-    `complete(messages)` returns (text, usage) and hides the transport
-    (real client or test stub). With `strict` (default) a narrative
-    that fails verification is dropped; with `strict=False` it is kept
-    with its issues listed (spot-check input, never demo output).
-    """
+def _precheck(english: str, motif_text: str,
+              witness: dict) -> list[str]:
+    """Shared fail-closed gate; non-empty means return None."""
     issues = validate_witness(witness)
-    if issues or not english.strip() or not motif_text.strip():
-        if not english.strip():
-            issues = issues + ["english is empty"]
-        if not motif_text.strip():
-            issues = issues + ["motif text is empty"]
-        return NarrateResult(None, issues=issues)
+    if not english.strip():
+        issues = issues + ["english is empty"]
+    if not motif_text.strip():
+        issues = issues + ["motif text is empty"]
+    return issues
+
+
+def _complete_and_verify(system: str, user_content: str, witness: dict, *,
+                         complete, strict: bool,
+                         log_tag: str) -> NarrateResult:
+    """One fail-closed model call over an extractive table."""
     try:
-        messages = build_messages(english, motif_text, witness)
-    except ValueError as exc:  # unreachable after validate, kept honest
-        return NarrateResult(None, issues=[str(exc)])
-    try:
-        text, usage = complete(messages)
+        text, usage = complete([{"role": "system", "content": system},
+                                {"role": "user", "content": user_content}])
     except Exception as exc:
-        log.warning("narrate: model call failed: %r", exc)
+        log.warning("%s: model call failed: %r", log_tag, exc)
         return NarrateResult(
             None, issues=[f"model unavailable: {exc}"], usage={})
     text = (text or "").strip()
@@ -264,7 +288,7 @@ def narrate(english: str, motif_text: str, witness: dict, *,
     predicate = weak[0] if weak else None
     degree = weak[1] if weak else None
     if problems and strict:
-        log.warning("narrate: verification failed: %s", problems)
+        log.warning("%s: verification failed: %s", log_tag, problems)
         return NarrateResult(None, weakest_step=step,
                              weakest_predicate=predicate,
                              weakest_degree=degree,
@@ -272,3 +296,60 @@ def narrate(english: str, motif_text: str, witness: dict, *,
     return NarrateResult(text, weakest_step=step, weakest_predicate=predicate,
                          weakest_degree=degree,
                          issues=problems, usage=dict(usage))
+
+
+def narrate(english: str, motif_text: str, witness: dict, *,
+            complete=spark_complete, strict: bool = True) -> NarrateResult:
+    """Write one witness narrative, failing closed (None, never invented).
+
+    `complete(messages)` returns (text, usage) and hides the transport
+    (real client or test stub). With `strict` (default) a narrative
+    that fails verification is dropped; with `strict=False` it is kept
+    with its issues listed (spot-check input, never demo output).
+    """
+    issues = _precheck(english, motif_text, witness)
+    if issues:
+        return NarrateResult(None, issues=issues)
+    try:
+        messages = build_messages(english, motif_text, witness)
+    except ValueError as exc:  # unreachable after validate, kept honest
+        return NarrateResult(None, issues=[str(exc)])
+    return _complete_and_verify(messages[0]["content"], messages[1]["content"],
+                                witness, complete=complete, strict=strict,
+                                log_tag="narrate")
+
+
+def build_verdict_messages(english: str, motif_text: str,
+                           witness: dict) -> list[dict]:
+    """System + witness-table prompts for the one-line verdict."""
+    issues = validate_witness(witness)
+    if issues:
+        raise ValueError(f"cannot narrate: {'; '.join(issues)}")
+    if not english.strip():
+        raise ValueError("cannot narrate: english is empty")
+    if not motif_text.strip():
+        raise ValueError("cannot narrate: motif text is empty")
+    return [{"role": "system", "content": VERDICT_SYSTEM},
+            {"role": "user",
+             "content": "Write the one-line verdict for this witness:\n\n"
+                        + witness_table(witness, english, motif_text)}]
+
+
+def summarize(english: str, motif_text: str, witness: dict, *,
+              complete=spark_complete, strict: bool = True) -> NarrateResult:
+    """Write the one-line verdict (what matched, why it qualifies).
+
+    Same fail-closed contract as narrate(): the verdict leads the
+    investigator paragraph in the UI, and drops to nothing rather
+    than inventing facts.
+    """
+    issues = _precheck(english, motif_text, witness)
+    if issues:
+        return NarrateResult(None, issues=issues)
+    try:
+        messages = build_verdict_messages(english, motif_text, witness)
+    except ValueError as exc:  # unreachable after validate, kept honest
+        return NarrateResult(None, issues=[str(exc)])
+    return _complete_and_verify(messages[0]["content"], messages[1]["content"],
+                                witness, complete=complete, strict=strict,
+                                log_tag="verdict")

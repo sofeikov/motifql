@@ -189,6 +189,41 @@ def test_weakest_step_extraction() -> None:
     assert narrate.weakest(tied)[0] == "a"  # ties go to the first
 
 
+VERDICT = ("This is a round trip scoring 0.718: money leaves an account "
+             "and comes back through 3 hops with similar amounts. The "
+             "weakest link is the amount similarity at 0.718.")
+
+
+def test_verdict_prompt_bans_code_names() -> None:
+    messages = narrate.build_verdict_messages(ENGLISH, MOTIF, _witness())
+    system = messages[0]["content"]
+    assert "predicate code names" in system
+    assert "DistinctArg" in system  # named as a forbidden example
+    assert "CANNOT NARRATE" in system
+    user = messages[1]["content"]
+    assert "one-line verdict" in user
+    for figure in ("HOPS (3)", "0.841", "0.718"):
+        assert figure in user, figure
+
+
+def test_summarize_happy_path_and_fail_closed() -> None:
+    res = narrate.summarize(ENGLISH, MOTIF, _witness(),
+                            complete=lambda m: (VERDICT, {"cached": True}))
+    assert res.text == VERDICT and res.issues == []
+    assert res.usage.get("cached") is True
+    # Same fail-closed contract as narrate().
+
+    def stub(messages):
+        raise AssertionError("model must not be called")
+
+    empty = dict(_witness(), hops=[])
+    assert narrate.summarize(ENGLISH, MOTIF, empty, complete=stub).text is None
+    richer = VERDICT + " The total was $9,800."
+    res = narrate.summarize(ENGLISH, MOTIF, _witness(),
+                            complete=lambda m: (richer, {}))
+    assert res.text is None and any("$9,800" in i for i in res.issues)
+
+
 def test_narration_is_cached_on_disk(tmp_path, monkeypatch) -> None:
     hits = []
 
